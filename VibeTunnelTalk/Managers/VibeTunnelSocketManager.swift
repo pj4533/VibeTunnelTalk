@@ -16,12 +16,13 @@ class VibeTunnelSocketManager: ObservableObject {
     
     /// Find available VibeTunnel sessions
     func findAvailableSessions() -> [String] {
-        let homeDir = NSHomeDirectory()
+        // Now that we're not sandboxed, this returns the real home directory
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
         let controlPath = homeDir + "/.vibetunnel/control"
         let fm = FileManager.default
         
         logger.info("🔍 Starting VibeTunnel session discovery")
-        logger.debug("Home directory: \(homeDir)")
+        logger.debug("User home directory: \(homeDir)")
         logger.debug("Looking for control directory at: \(controlPath)")
         
         // Check if .vibetunnel directory exists
@@ -88,7 +89,8 @@ class VibeTunnelSocketManager: ObservableObject {
     
     /// Connect to a VibeTunnel session
     func connect(to sessionId: String) {
-        let socketPath = NSHomeDirectory() + "/.vibetunnel/control/\(sessionId)/ipc.sock"
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+        let socketPath = homeDir + "/.vibetunnel/control/\(sessionId)/ipc.sock"
         
         logger.info("🔌 Connecting to session \(sessionId) at \(socketPath)")
         
