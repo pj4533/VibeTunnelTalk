@@ -10,7 +10,7 @@ import Combine
 
 struct ContentView: View {
     @StateObject private var socketManager = VibeTunnelSocketManager()
-    @StateObject private var openAIManager: OpenAIRealtimeManager
+    @StateObject private var openAIManager = OpenAIRealtimeManager()
     @StateObject private var activityMonitor = SessionActivityMonitor()
     @StateObject private var commandProcessor = VoiceCommandProcessor()
     
@@ -18,16 +18,9 @@ struct ContentView: View {
     @State private var selectedSession: String?
     @State private var isConnecting = false
     @State private var showSettings = false
-    @State private var apiKey = ""
+    @State private var hasStoredAPIKey = false
     
     @State private var cancelBag = Set<AnyCancellable>()
-    
-    init() {
-        // Load API key from .env file
-        let key = ConfigLoader.loadAPIKey() ?? ""
-        _openAIManager = StateObject(wrappedValue: OpenAIRealtimeManager(apiKey: key))
-        _apiKey = State(initialValue: key)
-    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -40,9 +33,13 @@ struct ContentView: View {
             Divider()
             
             // Main Content
-            if apiKey.isEmpty {
-                APIKeySetupView(apiKey: $apiKey) {
-                    saveAPIKey()
+            if !hasStoredAPIKey {
+                APIKeySetupView {
+                    // API key was saved successfully
+                    if let key = KeychainHelper.loadAPIKey() {
+                        hasStoredAPIKey = true
+                        openAIManager.updateAPIKey(key)
+                    }
                 }
             } else if !socketManager.isConnected {
                 SessionSelectionView(
@@ -69,11 +66,22 @@ struct ContentView: View {
         }
         .frame(minWidth: 600, minHeight: 400)
         .onAppear {
+            // Check for stored API key
+            if let key = KeychainHelper.loadAPIKey(), !key.isEmpty {
+                hasStoredAPIKey = true
+                openAIManager.updateAPIKey(key)
+            }
             setupBindings()
             refreshSessions()
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView(apiKey: $apiKey)
+            SettingsView {
+                // Settings saved, reload the API key
+                if let key = KeychainHelper.loadAPIKey() {
+                    openAIManager.updateAPIKey(key)
+                    hasStoredAPIKey = true
+                }
+            }
         }
     }
     
@@ -119,16 +127,11 @@ struct ContentView: View {
         socketManager.connect(to: session)
         
         // Connect to OpenAI
-        if !apiKey.isEmpty {
+        if hasStoredAPIKey {
             openAIManager.connect()
         }
         
         isConnecting = false
-    }
-    
-    private func saveAPIKey() {
-        // Recreate OpenAI manager with new key
-        // Note: In production, you'd save this to Keychain
     }
 }
 
@@ -160,8 +163,9 @@ struct HeaderView: View {
 }
 
 struct APIKeySetupView: View {
-    @Binding var apiKey: String
     let onSave: () -> Void
+    @State private var apiKeyText = ""
+    @State private var showingSaveError = false
     
     var body: some View {
         VStack(spacing: 20) {
@@ -172,22 +176,41 @@ struct APIKeySetupView: View {
                 .font(.subheadline)
                 .foregroundColor(.secondary)
             
-            SecureField("API Key", text: $apiKey)
+            SecureField("API Key", text: $apiKeyText)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 400)
             
-            Button("Save") {
-                onSave()
+            if showingSaveError {
+                Text("Failed to save API key to Keychain")
+                    .foregroundColor(.red)
+                    .font(.caption)
             }
-            .disabled(apiKey.isEmpty)
+            
+            Button("Save") {
+                if KeychainHelper.saveAPIKey(apiKeyText) {
+                    onSave()
+                } else {
+                    showingSaveError = true
+                }
+            }
+            .disabled(apiKeyText.isEmpty)
+            .keyboardShortcut(.return)
         }
         .padding(30)
     }
 }
 
 struct SettingsView: View {
-    @Binding var apiKey: String
+    let onSave: () -> Void
     @Environment(\.dismiss) var dismiss
+    @State private var apiKeyText = ""
+    @State private var showingSaveError = false
+    
+    init(onSave: @escaping () -> Void) {
+        self.onSave = onSave
+        // Load current key from Keychain to show in field
+        _apiKeyText = State(initialValue: KeychainHelper.loadAPIKey() ?? "")
+    }
     
     var body: some View {
         VStack(spacing: 20) {
@@ -199,10 +222,16 @@ struct SettingsView: View {
                 Text("OpenAI API Key")
                     .font(.headline)
                 
-                SecureField("API Key", text: $apiKey)
+                SecureField("API Key", text: $apiKeyText)
                     .textFieldStyle(.roundedBorder)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            
+            if showingSaveError {
+                Text("Failed to save API key to Keychain")
+                    .foregroundColor(.red)
+                    .font(.caption)
+            }
             
             HStack {
                 Spacer()
@@ -212,14 +241,20 @@ struct SettingsView: View {
                 }
                 
                 Button("Save") {
-                    // Save settings
-                    dismiss()
+                    // Save to Keychain
+                    if KeychainHelper.saveAPIKey(apiKeyText) {
+                        onSave()
+                        dismiss()
+                    } else {
+                        showingSaveError = true
+                    }
                 }
                 .keyboardShortcut(.return)
+                .disabled(apiKeyText.isEmpty)
             }
         }
         .padding()
-        .frame(width: 400, height: 200)
+        .frame(width: 400, height: showingSaveError ? 220 : 200)
     }
 }
 

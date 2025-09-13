@@ -13,7 +13,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession!
-    private let apiKey: String
+    private var apiKey: String
     
     // Audio engine for capturing microphone input
     private let audioEngine = AVAudioEngine()
@@ -33,6 +33,14 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     let functionCallRequested = PassthroughSubject<FunctionCall, Never>()
     let activityNarration = PassthroughSubject<String, Never>()
     
+    override init() {
+        self.apiKey = ""
+        super.init()
+        
+        urlSession = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        setupAudioSession()
+    }
+    
     init(apiKey: String) {
         self.apiKey = apiKey
         super.init()
@@ -41,8 +49,25 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
         setupAudioSession()
     }
     
+    /// Update the API key and reconnect if necessary
+    func updateAPIKey(_ newKey: String) {
+        // Disconnect if connected
+        if isConnected {
+            disconnect()
+        }
+        
+        // Update the key
+        apiKey = newKey
+    }
+    
     /// Connect to OpenAI Realtime API
     func connect() {
+        // Don't connect without an API key
+        guard !apiKey.isEmpty else { 
+            logger.warning("Cannot connect to OpenAI without API key")
+            return 
+        }
+        
         let url = URL(string: "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
