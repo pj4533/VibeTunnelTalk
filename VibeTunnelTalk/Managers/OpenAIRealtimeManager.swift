@@ -99,6 +99,8 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     
     /// Send text context about terminal activity
     func sendTerminalContext(_ context: String) {
+        logger.info("[OPENAI] 📤 Sending to OpenAI for TTS: \(context)")
+
         let event: [String: Any] = [
             "type": "conversation.item.create",
             "item": [
@@ -112,8 +114,19 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 ]
             ]
         ]
-        
+
         sendEvent(event)
+
+        // After sending the context, request a response with audio
+        let responseEvent: [String: Any] = [
+            "type": "response.create",
+            "response": [
+                "modalities": ["audio"],  // Request audio-only response for TTS
+                "instructions": "Speak this update naturally and concisely."
+            ]
+        ]
+        logger.info("[OPENAI] 🎤 Requesting audio response")
+        sendEvent(responseEvent)
     }
     
     /// Start listening for voice input
@@ -292,11 +305,13 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 // Handle audio chunk
                 if let delta = json["delta"] as? String,
                    let decodedAudio = Data(base64Encoded: delta) {
+                    logger.debug("[OPENAI] 🎵 Received audio chunk: \(decodedAudio.count) bytes")
                     handleAudioChunk(decodedAudio)
                 }
                 
             case "response.audio.done":
                 // Audio response complete
+                logger.info("[OPENAI] 🎶 Audio response complete, playing buffered audio")
                 playBufferedAudio()
                 DispatchQueue.main.async {
                     self.isSpeaking = false
@@ -313,6 +328,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
             case "response.text.done":
                 // Text response complete
                 if let text = json["text"] as? String {
+                    logger.info("[OPENAI] 📝 Text response: \(text)")
                     DispatchQueue.main.async {
                         self.activityNarration.send(text)
                         self.transcription = ""
@@ -351,11 +367,12 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
             case "error":
                 // Handle error
                 if let error = json["error"] as? [String: Any] {
-                    logger.error("[OPENAI-MSG] 🚨 Error from OpenAI: \(error)")
+                    logger.error("[OPENAI] 🚨 Error from OpenAI: \(error)")
                 }
                 
             default:
-                break
+                // Log other message types for debugging
+                logger.debug("[OPENAI] 📩 Received message type: \(type)")
             }
             
         } catch {

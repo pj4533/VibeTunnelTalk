@@ -26,10 +26,16 @@ class SessionActivityMonitor: ObservableObject {
     func processOutput(_ text: String) {
         outputBuffer += text
         lastActivityTime = Date()
-        
+
+        // Log significant output (not every character)
+        if text.count > 10 {
+            logger.info("[ACTIVITY] 📥 Received \(text.count) chars from VibeTunnel")
+        }
+
         // Detect activity type
         let detectedActivity = detectActivity(from: text)
         if detectedActivity != currentActivity {
+            logger.info("[ACTIVITY] 🔄 Activity changed: \(String(describing: self.currentActivity)) → \(String(describing: detectedActivity))")
             currentActivity = detectedActivity
             scheduleNarration()
         }
@@ -168,7 +174,8 @@ class SessionActivityMonitor: ObservableObject {
         let narration = generateNarration()
         if narration != lastNarration {
             lastNarration = narration
-            
+            logger.info("[ACTIVITY] 🎯 Generated narration: \(narration)")
+
             // This will be sent to OpenAI for voice synthesis
             NotificationCenter.default.post(
                 name: .activityNarrationReady,

@@ -99,6 +99,7 @@ struct ContentView: View {
         NotificationCenter.default.publisher(for: .activityNarrationReady)
             .compactMap { $0.userInfo?["narration"] as? String }
             .sink { narration in
+                logger.info("[CONTENT] 🎯 Forwarding narration to OpenAI: \(narration)")
                 openAIManager.sendTerminalContext(narration)
             }
             .store(in: &cancelBag)
