@@ -7,11 +7,17 @@ class KeychainHelper {
     
     /// Save API key to Keychain
     static func saveAPIKey(_ key: String) -> Bool {
-        guard let data = key.data(using: .utf8) else { return false }
-        
+        // Clean the API key: remove newlines and trim whitespace
+        let cleanedKey = key
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let data = cleanedKey.data(using: .utf8) else { return false }
+
         // Delete any existing item
         deleteAPIKey()
-        
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -19,7 +25,7 @@ class KeychainHelper {
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
         ]
-        
+
         let status = SecItemAdd(query as CFDictionary, nil)
         return status == errSecSuccess
     }
@@ -33,16 +39,22 @@ class KeychainHelper {
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
-        
+
         var dataTypeRef: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &dataTypeRef)
-        
+
         if status == errSecSuccess,
            let data = dataTypeRef as? Data,
            let key = String(data: data, encoding: .utf8) {
-            return key
+            // Clean the API key: remove newlines and trim whitespace
+            // This handles any existing corrupted keys in the keychain
+            let cleanedKey = key
+                .replacingOccurrences(of: "\n", with: "")
+                .replacingOccurrences(of: "\r", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleanedKey
         }
-        
+
         return nil
     }
     

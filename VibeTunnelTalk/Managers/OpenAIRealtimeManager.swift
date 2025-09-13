@@ -12,7 +12,6 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     @Published var transcription = ""
     
     private var webSocketTask: URLSessionWebSocketTask?
-    private var urlSession: URLSession!
     private var apiKey: String
     
     // Audio engine for capturing microphone input
@@ -36,18 +35,15 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     override init() {
         self.apiKey = ""
         super.init()
-        
-        urlSession = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         setupAudioSession()
     }
     
     init(apiKey: String) {
         self.apiKey = apiKey
         super.init()
-        
-        urlSession = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         setupAudioSession()
     }
+    
     
     /// Update the API key and reconnect if necessary
     func updateAPIKey(_ newKey: String) {
@@ -64,26 +60,30 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     func connect() {
         // Don't connect without an API key
         guard !apiKey.isEmpty else { 
+            logger.error("[OPENAI] ❌ Cannot connect without API key")
             return 
         }
         
-        let url = URL(string: "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17")!
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
+        logger.info("[OPENAI] 🔌 Connecting to OpenAI Realtime API...")
         
-        webSocketTask = urlSession.webSocketTask(with: request)
+        // Create URLRequest exactly like swift-realtime-openai
+        var request = URLRequest(url: URL(string: "wss://api.openai.com/v1/realtime")!.appending(queryItems: [
+            URLQueryItem(name: "model", value: "gpt-4o-realtime-preview-2024-10-01")
+        ]))
+        request.addValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        logger.info("[OPENAI] 📋 Request URL: \(request.url?.absoluteString ?? "nil")")
+
+        logger.info("[OPENAI] 📋 Headers: \(request.allHTTPHeaderFields ?? [:])")
+        
+        // Use URLSession.shared instead of custom session - this is how swift-realtime-openai does it
+        webSocketTask = URLSession.shared.webSocketTask(with: request)
+        webSocketTask?.delegate = self
         webSocketTask?.resume()
         
-        // Send initial session configuration
-        sendSessionConfiguration()
-        
-        // Start receiving messages
+        // Start receiving messages immediately
         receiveMessage()
-        
-        DispatchQueue.main.async {
-            self.isConnected = true
-        }
     }
     
     /// Disconnect from OpenAI
@@ -234,11 +234,15 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     
     private func sendEvent(_ event: [String: Any]) {
         guard let webSocketTask = webSocketTask else { return }
-        
+
         do {
             let data = try JSONSerialization.data(withJSONObject: event)
-            let message = URLSessionWebSocketTask.Message.data(data)
-            
+            guard let jsonString = String(data: data, encoding: .utf8) else {
+                logger.error("[OPENAI-TX] ❌ Failed to convert data to string")
+                return
+            }
+            let message = URLSessionWebSocketTask.Message.string(jsonString)
+
             webSocketTask.send(message) { [weak self] error in
                 if let error = error {
                     self?.logger.error("[OPENAI-TX] ❌ Failed to send event: \(error.localizedDescription)")
@@ -481,10 +485,18 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
 
 extension OpenAIRealtimeManager: URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        // WebSocket connected
+        logger.info("[OPENAI-WS] ✅ WebSocket opened with protocol: \(`protocol` ?? "none")")
+        
+        // Mark as connected and send configuration once WebSocket is open
+        DispatchQueue.main.async {
+            self.isConnected = true
+        }
+        self.sendSessionConfiguration()
     }
     
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        let reasonString = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "unknown"
+        logger.error("[OPENAI-WS] ❌ WebSocket closed with code: \(closeCode.rawValue), reason: \(reasonString)")
         handleDisconnection()
     }
 }
