@@ -99,8 +99,9 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     
     /// Send text context about terminal activity
     func sendTerminalContext(_ context: String) {
-        logger.info("[OPENAI] 📤 Sending to OpenAI for TTS: \(context)")
+        logger.info("[OPENAI] 📤 Sending terminal chunk for analysis and narration")
 
+        // Send the chunk with analysis request
         let event: [String: Any] = [
             "type": "conversation.item.create",
             "item": [
@@ -109,7 +110,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 "content": [
                     [
                         "type": "input_text",
-                        "text": "Terminal Update: \(context)"
+                        "text": context
                     ]
                 ]
             ]
@@ -117,15 +118,20 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
 
         sendEvent(event)
 
-        // After sending the context, request a response with both text and audio
+        // Request both text and audio response with narration
         let responseEvent: [String: Any] = [
             "type": "response.create",
             "response": [
-                "modalities": ["text", "audio"],  // Request both text and audio response
-                "instructions": "Speak this update naturally and concisely."
+                "modalities": ["text", "audio"],
+                "instructions": """
+                    Analyze the terminal output and provide a natural, conversational narration.
+                    Keep it brief (1-2 sentences) and informative.
+                    Focus on what Claude is actually doing, not just listing commands.
+                    Speak naturally as if you're explaining to someone what's happening on screen.
+                    """
             ]
         ]
-        logger.info("[OPENAI] 🎤 Requesting audio response")
+        logger.info("[OPENAI] 🎤 Requesting narration response")
         sendEvent(responseEvent)
     }
     

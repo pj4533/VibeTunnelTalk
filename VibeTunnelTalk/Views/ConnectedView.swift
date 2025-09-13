@@ -33,12 +33,14 @@ struct ConnectedView: View {
             // Activity Display
             ScrollView {
                 VStack(alignment: .leading, spacing: 15) {
-                    // Current Activity
-                    ActivityCard(
-                        title: "Current Activity",
-                        activity: activityMonitor.currentActivity,
-                        narration: activityMonitor.lastNarration
-                    )
+                    // Last Narration
+                    if !activityMonitor.lastNarration.isEmpty {
+                        NarrationCard(
+                            title: "Latest Update",
+                            narration: activityMonitor.lastNarration,
+                            isProcessing: activityMonitor.isProcessing
+                        )
+                    }
                     
                     // Transcription
                     if !openAIManager.transcription.isEmpty {
@@ -95,72 +97,33 @@ struct ConnectedView: View {
     }
 }
 
-struct ActivityCard: View {
+struct NarrationCard: View {
     let title: String
-    let activity: ActivityState
     let narration: String
-    
+    let isProcessing: Bool
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(title)
                     .font(.headline)
-                
+
                 Spacer()
-                
-                ActivityBadge(activity: activity)
+
+                if isProcessing {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                }
             }
-            
+
             Text(narration)
                 .font(.body)
                 .foregroundColor(.secondary)
-                .lineLimit(3)
+                .lineLimit(nil)
         }
         .padding()
         .background(Color.gray.opacity(0.1))
         .cornerRadius(10)
-    }
-}
-
-struct ActivityBadge: View {
-    let activity: ActivityState
-    
-    var body: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
-            
-            Text(text)
-                .font(.caption)
-                .fontWeight(.medium)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(color.opacity(0.2))
-        .cornerRadius(12)
-    }
-    
-    private var color: Color {
-        switch activity {
-        case .thinking: return .purple
-        case .writing: return .blue
-        case .reading: return .green
-        case .executing: return .orange
-        case .debugging: return .red
-        case .idle: return .gray
-        }
-    }
-    
-    private var text: String {
-        switch activity {
-        case .thinking: return "Thinking"
-        case .writing: return "Writing"
-        case .reading: return "Reading"
-        case .executing: return "Executing"
-        case .debugging: return "Debugging"
-        case .idle: return "Idle"
-        }
     }
 }
 

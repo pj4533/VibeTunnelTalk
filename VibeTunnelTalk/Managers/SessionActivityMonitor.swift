@@ -2,324 +2,271 @@ import Foundation
 import Combine
 import OSLog
 
-/// Monitors terminal output and generates intelligent summaries for narration
+/// Monitors terminal output and sends meaningful chunks to OpenAI for intelligent narration
 class SessionActivityMonitor: ObservableObject {
     private let logger = AppLogger.activityMonitor
-    
-    @Published var currentActivity: ActivityState = .idle
+
     @Published var lastNarration: String = ""
-    
+    @Published var isProcessing: Bool = false
+
+    // Buffer management
     private var outputBuffer = ""
-    private var lastActivityTime = Date()
-    private var fileOperations: [FileOperation] = []
-    private var currentCommand: String?
-    private var errorCount = 0
-    
-    // Patterns for detecting Claude activities
-    private let patterns = ActivityPatterns()
-    
-    // Debounce timer for narration
-    private var narrationTimer: Timer?
-    private let narrationDebounceInterval: TimeInterval = 2.0
-    
+    private var lastChunkSentTime = Date()
+
+    // State tracking for smart chunking
+    private var isInToolOutput = false
+    private var toolDepth = 0
+    private var consecutiveEmptyLines = 0
+    private var lastWasPrompt = false
+    private var hasSignificantContent = false
+
+    // Minimum time between chunks to avoid spamming
+    private let minTimeBetweenChunks: TimeInterval = 3.0
+
     /// Process new terminal output
     func processOutput(_ text: String) {
         outputBuffer += text
-        lastActivityTime = Date()
 
-        // Only log very significant output chunks (over 1000 chars)
-        if text.count > 1000 {
-            logger.debug("[ACTIVITY] 📥 Large data chunk: \(text.count) chars")
+        // Track if we have meaningful content (not just system messages)
+        if containsSignificantContent(text) {
+            hasSignificantContent = true
         }
 
-        // Detect activity type
-        let detectedActivity = detectActivity(from: text)
-        if detectedActivity != currentActivity {
-            logger.info("[ACTIVITY] 🔄 Activity changed: \(String(describing: self.currentActivity)) → \(String(describing: detectedActivity))")
-            currentActivity = detectedActivity
-            scheduleNarration()
-        }
-        
-        // Track file operations
-        trackFileOperations(from: text)
-        
-        // Track errors
-        trackErrors(from: text)
-        
-        // Limit buffer size
-        if outputBuffer.count > 10000 {
-            outputBuffer = String(outputBuffer.suffix(5000))
+        // Detect if this is a good breakpoint
+        if shouldSendChunk(for: text) {
+            sendChunk()
         }
     }
-    
-    /// Generate narration based on current activity
-    func generateNarration() -> String {
-        switch currentActivity {
-        case .thinking:
-            return generateThinkingNarration()
-        case .writing:
-            return generateWritingNarration()
-        case .reading:
-            return generateReadingNarration()
-        case .executing:
-            return generateExecutingNarration()
-        case .debugging:
-            return generateDebuggingNarration()
-        case .idle:
-            return "Claude is idle"
-        }
-    }
-    
+
     // MARK: - Private Methods
-    
-    private func detectActivity(from text: String) -> ActivityState {
+
+    /// Determine if text contains significant user/Claude content
+    private func containsSignificantContent(_ text: String) -> Bool {
         let lowercased = text.lowercased()
-        
-        // Check for specific Claude states
-        if patterns.thinkingPatterns.contains(where: { lowercased.contains($0) }) {
-            return .thinking
-        }
-        
-        if patterns.writingPatterns.contains(where: { lowercased.contains($0) }) {
-            return .writing
-        }
-        
-        if patterns.readingPatterns.contains(where: { lowercased.contains($0) }) {
-            return .reading
-        }
-        
-        if patterns.executingPatterns.contains(where: { lowercased.contains($0) }) {
-            return .executing
-        }
-        
-        if patterns.debuggingPatterns.contains(where: { lowercased.contains($0) }) {
-            return .debugging
-        }
-        
-        // Check for file operations
-        if text.contains("Creating") || text.contains("Writing") || text.contains("Updating") {
-            return .writing
-        }
-        
-        if text.contains("Reading") || text.contains("Analyzing") || text.contains("Examining") {
-            return .reading
-        }
-        
-        if text.contains("Running") || text.contains("Executing") || text.contains("npm") || text.contains("pnpm") {
-            return .executing
-        }
-        
-        if text.contains("error") || text.contains("Error") || text.contains("failed") {
-            return .debugging
-        }
-        
-        return .idle
-    }
-    
-    private func trackFileOperations(from text: String) {
-        // Extract file paths being modified
-        let filePathPattern = #"(?:\/[\w\-\.]+)+\.[\w]+"#
-        if let regex = try? NSRegularExpression(pattern: filePathPattern) {
-            let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-            
-            for match in matches {
-                if let range = Range(match.range, in: text) {
-                    let filePath = String(text[range])
-                    
-                    // Determine operation type
-                    let operation: FileOperation.OperationType
-                    if text.contains("Creating") || text.contains("Writing") {
-                        operation = .write
-                    } else if text.contains("Reading") {
-                        operation = .read
-                    } else if text.contains("Deleting") || text.contains("Removing") {
-                        operation = .delete
-                    } else {
-                        operation = .modify
-                    }
-                    
-                    fileOperations.append(FileOperation(
-                        path: filePath,
-                        operation: operation,
-                        timestamp: Date()
-                    ))
-                }
-            }
-        }
-        
-        // Keep only recent operations
-        let cutoff = Date().addingTimeInterval(-30)
-        fileOperations = fileOperations.filter { $0.timestamp > cutoff }
-    }
-    
-    private func trackErrors(from text: String) {
-        let errorKeywords = ["error", "Error", "ERROR", "failed", "Failed", "exception", "Exception"]
-        
-        for keyword in errorKeywords {
-            if text.contains(keyword) {
-                errorCount += 1
-                break
-            }
-        }
-    }
-    
-    private func scheduleNarration() {
-        narrationTimer?.invalidate()
-        narrationTimer = Timer.scheduledTimer(withTimeInterval: narrationDebounceInterval, repeats: false) { [weak self] _ in
-            self?.performNarration()
-        }
-    }
-    
-    private func performNarration() {
-        let narration = generateNarration()
-        if narration != lastNarration {
-            lastNarration = narration
-            logger.info("[ACTIVITY] 🎯 Generated narration: \(narration)")
 
-            // This will be sent to OpenAI for voice synthesis
-            NotificationCenter.default.post(
-                name: .activityNarrationReady,
-                object: nil,
-                userInfo: ["narration": narration]
-            )
+        // Skip system/permission messages
+        if lowercased.contains("permission") ||
+           lowercased.contains("sandbox") ||
+           lowercased.contains("system-reminder") ||
+           lowercased.contains("environment variable") ||
+           lowercased.contains("working directory:") {
+            return false
         }
+
+        // Look for actual content indicators
+        if text.contains("user:") ||
+           text.contains("assistant:") ||
+           text.contains("Human:") ||
+           text.contains("Claude:") ||
+           lowercased.contains("i'll") ||
+           lowercased.contains("let me") ||
+           lowercased.contains("i found") ||
+           lowercased.contains("here's") ||
+           lowercased.contains("this is") {
+            return true
+        }
+
+        // Tool usage is significant
+        if text.contains("<function_calls>") ||
+           text.contains("Tool:") ||
+           text.contains("```") {
+            return true
+        }
+
+        return false
     }
-    
-    private func generateThinkingNarration() -> String {
-        let duration = Date().timeIntervalSince(lastActivityTime)
-        if duration < 3 {
-            return "Claude is thinking about your request"
-        } else if duration < 10 {
-            return "Claude is analyzing the codebase"
+
+    /// Detect natural breakpoints for intelligent chunking
+    private func shouldSendChunk(for text: String) -> Bool {
+        // Don't send if buffer is too small or no significant content
+        guard outputBuffer.count > 50 && hasSignificantContent else {
+            return false
+        }
+
+        // Don't send too frequently
+        let timeSinceLastChunk = Date().timeIntervalSince(lastChunkSentTime)
+        guard timeSinceLastChunk >= minTimeBetweenChunks else {
+            return false
+        }
+
+        // Track empty lines for section breaks
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            consecutiveEmptyLines += 1
+            if consecutiveEmptyLines >= 2 {
+                return true  // Multiple empty lines indicate section break
+            }
         } else {
-            return "Claude is working on a complex solution"
+            consecutiveEmptyLines = 0
         }
-    }
-    
-    private func generateWritingNarration() -> String {
-        guard !fileOperations.isEmpty else {
-            return "Claude is writing code"
+
+        // User input is a natural breakpoint
+        if text.contains("user:") || text.contains("Human:") {
+            return true
         }
-        
-        let recentWrites = fileOperations.filter { $0.operation == .write || $0.operation == .modify }
-        
-        if recentWrites.count == 1,
-           let file = recentWrites.first {
-            let filename = URL(fileURLWithPath: file.path).lastPathComponent
-            return "Claude is modifying \(filename)"
-        } else if recentWrites.count > 1 {
-            return "Claude is updating \(recentWrites.count) files"
+
+        // Assistant starting response
+        if text.contains("assistant:") || text.contains("Claude:") {
+            return false  // Wait for the full response
         }
-        
-        return "Claude is writing code"
-    }
-    
-    private func generateReadingNarration() -> String {
-        let recentReads = fileOperations.filter { $0.operation == .read }
-        
-        if recentReads.count == 1,
-           let file = recentReads.first {
-            let filename = URL(fileURLWithPath: file.path).lastPathComponent
-            return "Claude is examining \(filename)"
-        } else if recentReads.count > 1 {
-            return "Claude is reviewing \(recentReads.count) files"
+
+        // Tool invocation boundaries
+        if text.contains("<function_calls>") {
+            toolDepth += 1
+            isInToolOutput = true
+            return false  // Wait for completion
         }
-        
-        return "Claude is reading the codebase"
-    }
-    
-    private func generateExecutingNarration() -> String {
-        if let command = currentCommand {
-            if command.contains("test") {
-                return "Running tests"
-            } else if command.contains("build") {
-                return "Building the project"
-            } else if command.contains("install") {
-                return "Installing dependencies"
-            } else {
-                return "Executing \(command)"
+
+        if text.contains("</function_calls>") || text.contains("</function_results>") {
+            toolDepth = max(0, toolDepth - 1)
+            if toolDepth == 0 {
+                isInToolOutput = false
+                return true  // End of tool usage is a good breakpoint
             }
         }
-        
-        return "Running a command"
-    }
-    
-    private func generateDebuggingNarration() -> String {
-        if errorCount == 1 {
-            return "Claude encountered an error and is fixing it"
-        } else if errorCount > 1 {
-            return "Claude is debugging \(errorCount) issues"
+
+        // Command completion indicators
+        if text.contains("✓") || text.contains("✔") ||
+           text.contains("BUILD SUCCEEDED") || text.contains("BUILD FAILED") ||
+           text.contains("Test Passed") || text.contains("Test Failed") {
+            return true
         }
-        
-        return "Claude is debugging"
+
+        // Error blocks are important breakpoints
+        if text.contains("Error:") || text.contains("error:") ||
+           text.contains("Failed:") || text.contains("failed:") {
+            return true
+        }
+
+        // File operation completions
+        if text.contains("File saved") || text.contains("File created") ||
+           text.contains("File deleted") || text.contains("Changes applied") {
+            return true
+        }
+
+        // Command prompt (terminal ready for input)
+        if text.contains("$") && text.count < 100 {
+            lastWasPrompt = true
+            return true
+        }
+
+        // Don't send while in tool output unless it gets too large
+        if isInToolOutput && outputBuffer.count < 3000 {
+            return false
+        }
+
+        // Send if buffer is getting large
+        if outputBuffer.count > 2500 {
+            return true
+        }
+
+        return false
     }
-}
 
-// MARK: - Supporting Types
+    /// Send accumulated output to OpenAI for narration
+    private func sendChunk() {
+        // Don't send empty or insignificant chunks
+        let trimmedBuffer = outputBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBuffer.isEmpty && hasSignificantContent else {
+            outputBuffer = ""
+            hasSignificantContent = false
+            return
+        }
 
-enum ActivityState {
-    case idle
-    case thinking
-    case writing
-    case reading
-    case executing
-    case debugging
-}
+        // Prepare and send the chunk
+        let chunk = outputBuffer
+        outputBuffer = ""
+        hasSignificantContent = false
+        lastChunkSentTime = Date()
+        isProcessing = true
 
-struct FileOperation {
-    enum OperationType {
-        case read, write, modify, delete
+        logger.info("[ACTIVITY] 📤 Sending meaningful chunk for narration: \(chunk.count) chars")
+
+        // Create focused prompt for OpenAI
+        let contextualizedChunk = prepareChunkForNarration(chunk)
+
+        // Post notification with the prepared chunk
+        NotificationCenter.default.post(
+            name: .terminalChunkReady,
+            object: nil,
+            userInfo: ["chunk": contextualizedChunk]
+        )
+
+        isProcessing = false
     }
-    
-    let path: String
-    let operation: OperationType
-    let timestamp: Date
-}
 
-struct ActivityPatterns {
-    let thinkingPatterns = [
-        "thinking",
-        "analyzing",
-        "considering",
-        "evaluating",
-        "planning"
-    ]
-    
-    let writingPatterns = [
-        "writing",
-        "creating",
-        "implementing",
-        "adding",
-        "modifying"
-    ]
-    
-    let readingPatterns = [
-        "reading",
-        "examining",
-        "reviewing",
-        "searching",
-        "looking"
-    ]
-    
-    let executingPatterns = [
-        "running",
-        "executing",
-        "starting",
-        "launching",
-        "building"
-    ]
-    
-    let debuggingPatterns = [
-        "debugging",
-        "fixing",
-        "resolving",
-        "troubleshooting",
-        "investigating"
-    ]
+    /// Prepare chunk with focused context for OpenAI
+    private func prepareChunkForNarration(_ chunk: String) -> String {
+        // Filter out system messages and focus on conversation
+        let lines = chunk.components(separatedBy: .newlines)
+        var filteredLines: [String] = []
+        var inSystemMessage = false
+
+        for line in lines {
+            // Skip system reminders and environment info
+            if line.contains("<system-reminder>") || line.contains("<env>") {
+                inSystemMessage = true
+                continue
+            }
+            if line.contains("</system-reminder>") || line.contains("</env>") {
+                inSystemMessage = false
+                continue
+            }
+            if inSystemMessage {
+                continue
+            }
+
+            // Skip permission and sandbox messages
+            let lowercased = line.lowercased()
+            if lowercased.contains("permission") ||
+               lowercased.contains("sandbox") ||
+               lowercased.contains("environment variable") {
+                continue
+            }
+
+            filteredLines.append(line)
+        }
+
+        let filteredContent = filteredLines.joined(separator: "\n")
+
+        return """
+        Terminal output from Claude Code session:
+
+        ```
+        \(filteredContent)
+        ```
+
+        Provide a brief, natural narration (1-2 sentences) focusing ONLY on:
+        - What the user asked Claude to do
+        - What Claude is currently working on or just completed
+        - Any important results, errors, or milestones
+
+        DO NOT mention:
+        - System settings, permissions, or sandboxing
+        - File paths unless they're central to what's being done
+        - Technical implementation details unless they're the main focus
+        - Tool names or function calls
+
+        Speak conversationally, as if explaining to someone what's happening in the session.
+        Focus on the WHAT and WHY, not the HOW.
+        """
+    }
+
+    /// Reset the monitor state
+    func reset() {
+        outputBuffer = ""
+        lastChunkSentTime = Date()
+        isProcessing = false
+        lastNarration = ""
+        hasSignificantContent = false
+        isInToolOutput = false
+        toolDepth = 0
+        consecutiveEmptyLines = 0
+        lastWasPrompt = false
+    }
 }
 
 // MARK: - Notifications
 
 extension Notification.Name {
-    static let activityNarrationReady = Notification.Name("activityNarrationReady")
+    static let terminalChunkReady = Notification.Name("terminalChunkReady")
 }

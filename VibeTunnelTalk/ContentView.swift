@@ -63,7 +63,7 @@ struct ContentView: View {
             StatusBarView(
                 socketConnected: socketManager.isConnected,
                 openAIConnected: openAIManager.isConnected,
-                activity: activityMonitor.currentActivity
+                isProcessing: activityMonitor.isProcessing
             )
         }
         .frame(minWidth: 600, minHeight: 400)
@@ -95,12 +95,12 @@ struct ContentView: View {
             }
             .store(in: &cancelBag)
         
-        // Connect activity narrations to OpenAI
-        NotificationCenter.default.publisher(for: .activityNarrationReady)
-            .compactMap { $0.userInfo?["narration"] as? String }
-            .sink { narration in
-                logger.info("[CONTENT] 🎯 Forwarding narration to OpenAI: \(narration)")
-                openAIManager.sendTerminalContext(narration)
+        // Connect terminal chunks to OpenAI for intelligent narration
+        NotificationCenter.default.publisher(for: .terminalChunkReady)
+            .compactMap { $0.userInfo?["chunk"] as? String }
+            .sink { chunk in
+                logger.info("[CONTENT] 📤 Sending terminal chunk to OpenAI for analysis")
+                openAIManager.sendTerminalContext(chunk)
             }
             .store(in: &cancelBag)
         
@@ -267,8 +267,8 @@ struct SettingsView: View {
 struct StatusBarView: View {
     let socketConnected: Bool
     let openAIConnected: Bool
-    let activity: ActivityState
-    
+    let isProcessing: Bool
+
     var body: some View {
         HStack {
             // Connection Status
@@ -277,19 +277,29 @@ struct StatusBarView: View {
                     label: "VibeTunnel",
                     isConnected: socketConnected
                 )
-                
+
                 StatusIndicator(
                     label: "OpenAI",
                     isConnected: openAIConnected
                 )
             }
-            
+
             Spacer()
-            
-            // Activity Status
-            Text(activity == .idle ? "Ready" : "Active")
-                .font(.caption)
-                .foregroundColor(.secondary)
+
+            // Processing Status
+            if isProcessing {
+                HStack(spacing: 5) {
+                    ProgressView()
+                        .scaleEffect(0.5)
+                    Text("Processing")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                Text("Ready")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
