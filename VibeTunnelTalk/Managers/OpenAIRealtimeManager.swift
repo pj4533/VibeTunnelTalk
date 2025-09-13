@@ -117,11 +117,11 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
 
         sendEvent(event)
 
-        // After sending the context, request a response with audio
+        // After sending the context, request a response with both text and audio
         let responseEvent: [String: Any] = [
             "type": "response.create",
             "response": [
-                "modalities": ["audio"],  // Request audio-only response for TTS
+                "modalities": ["text", "audio"],  // Request both text and audio response
                 "instructions": "Speak this update naturally and concisely."
             ]
         ]

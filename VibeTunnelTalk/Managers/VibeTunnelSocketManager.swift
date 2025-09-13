@@ -120,9 +120,9 @@ class VibeTunnelSocketManager: ObservableObject {
         // Subscribe to terminal output from SSE
         sseSubscription = sseClient?.terminalOutput
             .sink { [weak self] output in
-                // Log significant output (not every single character)
-                if output.count > 10 {
-                    self?.logger.info("[VIBETUNNEL] 📥 SSE data received: \(output.count) chars")
+                // Only log very large output chunks for debugging
+                if output.count > 1000 {
+                    self?.logger.debug("[VIBETUNNEL] 📥 Large SSE chunk: \(output.count) chars")
                 }
 
                 // Remove ANSI escape codes for cleaner processing

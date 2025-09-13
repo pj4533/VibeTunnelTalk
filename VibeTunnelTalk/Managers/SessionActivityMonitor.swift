@@ -27,9 +27,9 @@ class SessionActivityMonitor: ObservableObject {
         outputBuffer += text
         lastActivityTime = Date()
 
-        // Log significant output (not every character)
-        if text.count > 10 {
-            logger.info("[ACTIVITY] 📥 Received \(text.count) chars from VibeTunnel")
+        // Only log very significant output chunks (over 1000 chars)
+        if text.count > 1000 {
+            logger.debug("[ACTIVITY] 📥 Large data chunk: \(text.count) chars")
         }
 
         // Detect activity type
