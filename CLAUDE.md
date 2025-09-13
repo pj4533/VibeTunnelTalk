@@ -80,7 +80,7 @@ The app communicates with VibeTunnel sessions using two mechanisms:
   - ERROR (0x05): Error messages
 
 #### 2. SSE Stream (Terminal Output)
-- Endpoint: `http://localhost:5174/api/sessions/{session-id}/stream`
+- Endpoint: `http://localhost:4020/api/sessions/{session-id}/stream`
 - Protocol: Server-Sent Events (SSE)
 - Receives real-time terminal output from VibeTunnel
 
@@ -114,3 +114,11 @@ A comprehensive implementation guide is available in `docs/VibeTunnelTalk_Implem
 4. **Activity Detection**: The app uses pattern matching to detect Claude's activities and generate appropriate narrations
 
 5. **Error Handling**: Implement reconnection logic for both socket and WebSocket connections
+
+## Reference Implementation
+
+**OpenAI WebSocket Reference**: When troubleshooting WebSocket communication with OpenAI's Realtime API, refer to the reference implementation at `~/Developer/swift-realtime-openai`. This codebase provides:
+- Proper WebSocket connection handling
+- Event serialization/deserialization patterns
+- Error handling best practices
+- Connection state management without unnecessary heartbeats

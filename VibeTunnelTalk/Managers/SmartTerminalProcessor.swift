@@ -11,8 +11,8 @@ class SmartTerminalProcessor: ObservableObject {
     private let openAIManager: OpenAIRealtimeManager
 
     // Configuration
-    @Published var sampleInterval: TimeInterval = 1.0 // Sample buffer every second
-    @Published var minChangeThreshold: Int = 10 // Minimum characters changed to trigger update
+    @Published var sampleInterval: TimeInterval = 1.0 // Sample buffer every second for responsiveness
+    @Published var minChangeThreshold: Int = 5 // Lower threshold to catch small changes
 
     // State tracking
     @Published var isProcessing = false
@@ -47,7 +47,9 @@ class SmartTerminalProcessor: ObservableObject {
         sseSubscription = sseClient.asciinemaEvent
             .receive(on: eventQueue)
             .sink { [weak self] event in
-                self?.processAsciinemaEvent(event)
+                guard let self = self else { return }
+                self.logger.debug("[PROCESSOR] Received event from SSE")
+                self.processAsciinemaEvent(event)
             }
 
         // Start sampling timer
@@ -76,10 +78,16 @@ class SmartTerminalProcessor: ObservableObject {
     private func processAsciinemaEvent(_ event: AsciinemaEvent) {
         totalEventsProcessed += 1
 
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+        logger.debug("[PROCESSOR @ \(timestamp)] Processing event type: \(event.type.rawValue), data length: \(event.data.count)")
+
         switch event.type {
         case .output:
             // Feed output to buffer manager
             bufferManager.processOutput(event.data)
+            logger.debug("[PROCESSOR @ \(timestamp)] Fed \(event.data.count) chars to buffer")
 
         case .resize:
             // Parse resize dimensions (format: "120x40")
@@ -105,6 +113,7 @@ class SmartTerminalProcessor: ObservableObject {
 
     /// Start the sampling timer
     private func startSamplingTimer() {
+        logger.info("[PROCESSOR] Starting sampling timer with interval: \(self.sampleInterval)s")
         sampleTimer = Timer.scheduledTimer(withTimeInterval: sampleInterval, repeats: true) { [weak self] _ in
             self?.sampleBuffer()
         }
@@ -115,11 +124,22 @@ class SmartTerminalProcessor: ObservableObject {
         eventQueue.async { [weak self] in
             guard let self = self else { return }
 
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm:ss.SSS"
+            let timestamp = formatter.string(from: Date())
+
+            // Check if OpenAI is connected before sampling
+            guard self.openAIManager.isConnected else {
+                self.logger.debug("[SAMPLE @ \(timestamp)] OpenAI not connected, skipping sample")
+                return
+            }
+
             // Get current buffer state
             let currentContent = self.bufferManager.getBufferText()
 
             // Check if there are meaningful changes
             if currentContent != self.lastBufferSnapshot {
+                self.logger.debug("[SAMPLE @ \(timestamp)] Buffer changed, analyzing...")
                 self.lastBufferSnapshot = currentContent
 
                 // Create a diff-based update
@@ -127,9 +147,14 @@ class SmartTerminalProcessor: ObservableObject {
 
                 // Only send if the diff is significant
                 if diff.count > self.minChangeThreshold {
+                    self.logger.info("[SAMPLE @ \(timestamp)] Sending update: \(diff.count) chars changed")
                     self.sendUpdateToOpenAI(diff: diff, fullContent: currentContent)
                     self.lastSentContent = currentContent
+                } else if diff.count > 0 {
+                    self.logger.debug("[SAMPLE @ \(timestamp)] Changes too small (\(diff.count) chars), buffering...")
                 }
+            } else {
+                self.logger.debug("[SAMPLE @ \(timestamp)] No buffer changes detected")
             }
         }
     }
@@ -196,8 +221,13 @@ class SmartTerminalProcessor: ObservableObject {
         \(diff)
         """
 
-        // Log what we're sending
-        logger.info("[UPDATE] Sending to OpenAI - Size: \(diff.count) chars, Reduction: \(String(format: "%.1f%%", self.dataReductionRatio * 100))")
+        // Create timestamp for logging
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+
+        // Log what we're sending with timestamp
+        logger.info("[UPDATE @ \(timestamp)] Sending to OpenAI - Size: \(diff.count) chars, Reduction: \(String(format: "%.1f%%", self.dataReductionRatio * 100))")
 
         // Write to debug file
         writeToDebugFile(message)
@@ -251,10 +281,17 @@ class SmartTerminalProcessor: ObservableObject {
     private func writeToDebugFile(_ content: String) {
         guard let debugFileHandle = debugFileHandle else { return }
 
-        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        // Create detailed timestamp with milliseconds
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+
         let entry = """
 
-        [\(timestamp)]
+        [\(timestamp)] - Update #\(totalUpdatesSent)
+        ----------------------------------------
+        Data reduction: \(String(format: "%.1f%%", dataReductionRatio * 100))
+        Characters sent: \(content.count)
         ----------------------------------------
         \(content)
         ========================================

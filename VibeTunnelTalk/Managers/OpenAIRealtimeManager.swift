@@ -10,7 +10,15 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     @Published var isListening = false
     @Published var isSpeaking = false
     @Published var transcription = ""
-    
+
+    // Response tracking
+    private var activeResponseId: String? = nil
+    private var isResponseInProgress = false
+    private var narrationQueue: [String] = []
+    private var pendingNarration: String? = nil
+    private var lastNarrationTime = Date(timeIntervalSince1970: 0)
+    private var minNarrationInterval: TimeInterval = 2.0 // Reduced back to 2 seconds for responsiveness
+
     private var webSocketTask: URLSessionWebSocketTask?
     private var apiKey: String
     
@@ -79,7 +87,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
         webSocketTask = URLSession.shared.webSocketTask(with: request)
         webSocketTask?.delegate = self
         webSocketTask?.resume()
-        
+
         // Start receiving messages immediately
         receiveMessage()
     }
@@ -89,17 +97,81 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         stopAudioCapture()
-        
+
         DispatchQueue.main.async {
             self.isConnected = false
             self.isListening = false
             self.isSpeaking = false
+            self.isResponseInProgress = false
+            self.activeResponseId = nil
+            self.narrationQueue.removeAll()
         }
     }
     
     /// Send text context about terminal activity
     func sendTerminalContext(_ context: String) {
-        logger.info("[OPENAI] 📤 Sending terminal chunk for analysis and narration")
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+
+        // Queue the narration request
+        narrationQueue.append(context)
+        logger.info("[OPENAI @ \(timestamp)] 📥 Queued narration request (queue size: \(self.narrationQueue.count))")
+
+        // Process queue if not currently processing a response
+        processNarrationQueue()
+    }
+
+    /// Process the narration queue
+    private func processNarrationQueue() {
+        // Create timestamp for logging
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+
+        // Check if WebSocket is connected
+        guard isConnected else {
+            logger.debug("[OPENAI @ \(timestamp)] 🔌 Not connected, clearing narration queue")
+            narrationQueue.removeAll()
+            return
+        }
+
+        // Check if we can send a narration
+        guard !isResponseInProgress else {
+            logger.info("[OPENAI @ \(timestamp)] ⏸️ Response in progress (ID: \(self.activeResponseId ?? "none")), will retry when complete")
+            // Don't schedule retry here - response.done will trigger processNarrationQueue
+            return
+        }
+
+        guard !narrationQueue.isEmpty else {
+            return
+        }
+
+        // Check if enough time has passed since last narration
+        let timeSinceLastNarration = Date().timeIntervalSince(lastNarrationTime)
+
+        // For the very first narration (when lastNarrationTime is ancient), don't wait
+        let isFirstNarration = timeSinceLastNarration > 3600 // More than an hour means it's the first
+
+        if !isFirstNarration && timeSinceLastNarration < minNarrationInterval {
+            let waitTime = minNarrationInterval - timeSinceLastNarration
+            logger.info("[OPENAI @ \(timestamp)] ⏱️ Waiting \(String(format: "%.1f", waitTime))s before next narration")
+            // Schedule retry
+            DispatchQueue.main.asyncAfter(deadline: .now() + waitTime) { [weak self] in
+                self?.processNarrationQueue()
+            }
+            return
+        }
+
+        // Combine all queued narrations into one comprehensive update
+        let combinedContext = narrationQueue.joined(separator: "\n\n")
+        narrationQueue.removeAll()
+
+        // Mark as processing
+        isResponseInProgress = true
+        lastNarrationTime = Date()
+
+        logger.info("[OPENAI @ \(timestamp)] 📤 Sending combined narration request (\(combinedContext.count) chars)")
 
         // Send the chunk with analysis request
         let event: [String: Any] = [
@@ -110,7 +182,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 "content": [
                     [
                         "type": "input_text",
-                        "text": context
+                        "text": combinedContext
                     ]
                 ]
             ]
@@ -131,7 +203,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                     """
             ]
         ]
-        logger.info("[OPENAI] 🎤 Requesting narration response")
+        logger.info("[OPENAI @ \(timestamp)] 🎤 Requesting narration response")
         sendEvent(responseEvent)
     }
     
@@ -180,6 +252,11 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     }
     
     private func sendSessionConfiguration() {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+        logger.info("[OPENAI @ \(timestamp)] 🔧 Sending session configuration")
+
         let config: [String: Any] = [
             "type": "session.update",
             "session": [
@@ -250,23 +327,39 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     }
     
     private func sendEvent(_ event: [String: Any]) {
-        guard let webSocketTask = webSocketTask else { return }
+        guard let webSocketTask = webSocketTask else {
+            logger.error("[OPENAI-TX] ❌ No WebSocket task available")
+            return
+        }
+
+        // Create timestamp for logging
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
 
         do {
             let data = try JSONSerialization.data(withJSONObject: event)
             guard let jsonString = String(data: data, encoding: .utf8) else {
-                logger.error("[OPENAI-TX] ❌ Failed to convert data to string")
+                logger.error("[OPENAI-TX @ \(timestamp)] ❌ Failed to convert data to string")
                 return
             }
             let message = URLSessionWebSocketTask.Message.string(jsonString)
 
+            // Log event type
+            if let eventType = event["type"] as? String {
+                logger.debug("[OPENAI-TX @ \(timestamp)] 📨 Sending event: \(eventType)")
+            }
+
             webSocketTask.send(message) { [weak self] error in
                 if let error = error {
-                    self?.logger.error("[OPENAI-TX] ❌ Failed to send event: \(error.localizedDescription)")
+                    self?.logger.error("[OPENAI-TX @ \(timestamp)] ❌ Failed to send event: \(error.localizedDescription)")
+
+                    // If send fails, we might be disconnected
+                    self?.handleDisconnection()
                 }
             }
         } catch {
-            logger.error("[OPENAI-TX] ❌ Failed to serialize event: \(error.localizedDescription)")
+            logger.error("[OPENAI-TX @ \(timestamp)] ❌ Failed to serialize event: \(error.localizedDescription)")
         }
     }
     
@@ -276,9 +369,12 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
             case .success(let message):
                 self?.handleMessage(message)
                 self?.receiveMessage() // Continue receiving
-                
+
             case .failure(let error):
-                self?.logger.error("[OPENAI-RX] ❌ WebSocket receive error: \(error.localizedDescription)")
+                let formatter = DateFormatter()
+                formatter.dateFormat = "HH:mm:ss.SSS"
+                let timestamp = formatter.string(from: Date())
+                self?.logger.error("[OPENAI-RX @ \(timestamp)] ❌ WebSocket receive error: \(error.localizedDescription)")
                 self?.handleDisconnection()
             }
         }
@@ -307,6 +403,55 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
             }
             
             switch type {
+            case "response.created":
+                // Track the response ID
+                if let response = json["response"] as? [String: Any],
+                   let responseId = response["id"] as? String {
+                    activeResponseId = responseId
+                    isResponseInProgress = true
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = "HH:mm:ss.SSS"
+                    let timestamp = formatter.string(from: Date())
+                    logger.info("[OPENAI @ \(timestamp)] 🆔 Response started: \(responseId)")
+                } else {
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = "HH:mm:ss.SSS"
+                    let timestamp = formatter.string(from: Date())
+                    logger.warning("[OPENAI @ \(timestamp)] ⚠️ Response created without ID")
+                }
+
+            case "response.done":
+                // Response completed
+                let formatter = DateFormatter()
+                formatter.dateFormat = "HH:mm:ss.SSS"
+                let timestamp = formatter.string(from: Date())
+
+                if let response = json["response"] as? [String: Any],
+                   let responseId = response["id"] as? String {
+                    logger.info("[OPENAI @ \(timestamp)] ✅ Response completed: \(responseId)")
+                    if responseId == activeResponseId {
+                        activeResponseId = nil
+                        isResponseInProgress = false
+
+                        // Process any queued narrations immediately
+                        DispatchQueue.main.async { [weak self] in
+                            self?.processNarrationQueue()
+                        }
+                    } else {
+                        logger.warning("[OPENAI @ \(timestamp)] ⚠️ Response done for unknown ID: \(responseId), active: \(self.activeResponseId ?? "none")")
+                    }
+                } else {
+                    // Response done without ID - still clear the flag
+                    logger.warning("[OPENAI @ \(timestamp)] ⚠️ Response done without ID, clearing flag")
+                    activeResponseId = nil
+                    isResponseInProgress = false
+
+                    // Process any queued narrations
+                    DispatchQueue.main.async { [weak self] in
+                        self?.processNarrationQueue()
+                    }
+                }
+
             case "response.audio.delta":
                 // Handle audio chunk
                 if let delta = json["delta"] as? String,
@@ -314,7 +459,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                     logger.debug("[OPENAI] 🎵 Received audio chunk: \(decodedAudio.count) bytes")
                     handleAudioChunk(decodedAudio)
                 }
-                
+
             case "response.audio.done":
                 // Audio response complete
                 logger.info("[OPENAI] 🎶 Audio response complete, playing buffered audio")
@@ -322,7 +467,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     self.isSpeaking = false
                 }
-                
+
             case "response.text.delta":
                 // Handle text response chunk
                 if let delta = json["delta"] as? String {
@@ -330,7 +475,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                         self.transcription += delta
                     }
                 }
-                
+
             case "response.text.done":
                 // Text response complete
                 if let text = json["text"] as? String {
@@ -361,19 +506,72 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
             case "input_audio_buffer.speech_started":
                 // User started speaking
                 break
-                
+
             case "input_audio_buffer.speech_stopped":
                 // User stopped speaking
                 break
-                
+
             case "conversation.item.created":
                 // New conversation item created
+                break
+
+            case "session.created":
+                // Session created successfully
+                let formatter = DateFormatter()
+                formatter.dateFormat = "HH:mm:ss.SSS"
+                let timestamp = formatter.string(from: Date())
+                logger.info("[OPENAI @ \(timestamp)] 🎯 Session created successfully")
+
+                // Send initial greeting after session is ready
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                    self?.sendTerminalContext("VibeTunnelTalk connected to Claude Code session. Ready to narrate terminal activity.")
+                }
+                break
+
+            case "session.updated":
+                // Session updated successfully
+                let formatter2 = DateFormatter()
+                formatter2.dateFormat = "HH:mm:ss.SSS"
+                let timestamp2 = formatter2.string(from: Date())
+                logger.info("[OPENAI @ \(timestamp2)] 🎯 Session updated successfully")
                 break
                 
             case "error":
                 // Handle error
                 if let error = json["error"] as? [String: Any] {
                     logger.error("[OPENAI] 🚨 Error from OpenAI: \(error)")
+
+                    // Check error type and handle appropriately
+                    if let code = error["code"] as? String {
+                        let formatter = DateFormatter()
+                        formatter.dateFormat = "HH:mm:ss.SSS"
+                        let timestamp = formatter.string(from: Date())
+
+                        switch code {
+                        case "conversation_already_has_active_response":
+                            logger.info("[OPENAI @ \(timestamp)] ⚠️ Active response conflict - waiting for current response to complete")
+                            // Don't clear the active response state, just wait longer
+                            // The response.done event will clear it properly
+
+                        case "rate_limit_exceeded":
+                            logger.error("[OPENAI @ \(timestamp)] 🚫 Rate limit exceeded - backing off")
+                            // Clear state and wait longer before retrying
+                            activeResponseId = nil
+                            isResponseInProgress = false
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                                self?.processNarrationQueue()
+                            }
+
+                        default:
+                            logger.error("[OPENAI @ \(timestamp)] 🚨 Unhandled error code: \(code)")
+                            // For unknown errors, reset state and retry
+                            activeResponseId = nil
+                            isResponseInProgress = false
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                                self?.processNarrationQueue()
+                            }
+                        }
+                    }
                 }
                 
             default:
@@ -498,7 +696,15 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
             self.isConnected = false
             self.isListening = false
             self.isSpeaking = false
+            self.isResponseInProgress = false
+            self.activeResponseId = nil
+            self.narrationQueue.removeAll()
         }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+        logger.error("[OPENAI @ \(timestamp)] 🔴 WebSocket disconnected - connection lost")
     }
 }
 
@@ -506,11 +712,15 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
 
 extension OpenAIRealtimeManager: URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        logger.info("[OPENAI-WS] ✅ WebSocket opened with protocol: \(`protocol` ?? "none")")
-        
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+        logger.info("[OPENAI-WS @ \(timestamp)] ✅ WebSocket opened with protocol: \(`protocol` ?? "none")")
+
         // Mark as connected and send configuration once WebSocket is open
         DispatchQueue.main.async {
             self.isConnected = true
+            self.logger.info("[OPENAI-WS @ \(timestamp)] 🔄 Connection state updated to: connected")
         }
         self.sendSessionConfiguration()
     }
