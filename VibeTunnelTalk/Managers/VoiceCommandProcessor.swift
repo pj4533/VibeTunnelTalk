@@ -1,9 +1,9 @@
 import Foundation
 import Combine
-import os.log
+import OSLog
 
 class VoiceCommandProcessor: ObservableObject {
-    private let logger = Logger(subsystem: "com.vibetunneltalk", category: "VoiceCommands")
+    private let logger = AppLogger.voiceCommands
     
     @Published var lastCommand: String = ""
     @Published var isProcessing = false

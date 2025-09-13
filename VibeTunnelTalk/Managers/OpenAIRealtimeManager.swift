@@ -1,10 +1,10 @@
 import Foundation
 import AVFoundation
 import Combine
-import os.log
+import OSLog
 
 class OpenAIRealtimeManager: NSObject, ObservableObject {
-    private let logger = Logger(subsystem: "com.vibetunneltalk", category: "OpenAIRealtime")
+    private let logger = AppLogger.openAIRealtime
     
     @Published var isConnected = false
     @Published var isListening = false

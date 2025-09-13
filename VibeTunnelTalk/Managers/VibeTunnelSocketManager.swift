@@ -1,10 +1,10 @@
 import Foundation
 import Network
 import Combine
-import os.log
+import OSLog
 
 class VibeTunnelSocketManager: ObservableObject {
-    private let logger = Logger(subsystem: "com.vibetunneltalk", category: "SocketManager")
+    private let logger = AppLogger.socketManager
     
     @Published var isConnected = false
     @Published var currentSessionId: String?
@@ -16,26 +16,81 @@ class VibeTunnelSocketManager: ObservableObject {
     
     /// Find available VibeTunnel sessions
     func findAvailableSessions() -> [String] {
-        let controlPath = NSHomeDirectory() + "/.vibetunnel/control"
+        let homeDir = NSHomeDirectory()
+        let controlPath = homeDir + "/.vibetunnel/control"
         let fm = FileManager.default
         
+        logger.info("🔍 Starting VibeTunnel session discovery")
+        logger.debug("Home directory: \(homeDir)")
+        logger.debug("Looking for control directory at: \(controlPath)")
+        
+        // Check if .vibetunnel directory exists
+        let vibetunnelPath = homeDir + "/.vibetunnel"
+        if !fm.fileExists(atPath: vibetunnelPath) {
+            logger.error("❌ .vibetunnel directory does not exist at: \(vibetunnelPath)")
+            return []
+        }
+        logger.info("✅ Found .vibetunnel directory")
+        
+        // Check if control directory exists
+        if !fm.fileExists(atPath: controlPath) {
+            logger.error("❌ Control directory does not exist at: \(controlPath)")
+            
+            // List what's in .vibetunnel directory for debugging
+            if let vibetunnelContents = try? fm.contentsOfDirectory(atPath: vibetunnelPath) {
+                logger.debug("Contents of .vibetunnel: \(vibetunnelContents.joined(separator: ", "))")
+            }
+            return []
+        }
+        logger.info("✅ Found control directory")
+        
+        // Get contents of control directory
         guard let contents = try? fm.contentsOfDirectory(atPath: controlPath) else {
-            logger.warning("No VibeTunnel control directory found")
+            logger.error("❌ Failed to read contents of control directory at: \(controlPath)")
             return []
         }
         
+        logger.info("📁 Found \(contents.count) items in control directory: \(contents.joined(separator: ", "))")
+        
         // Filter for directories that contain an ipc.sock file
-        return contents.filter { sessionId in
-            let socketPath = "\(controlPath)/\(sessionId)/ipc.sock"
-            return fm.fileExists(atPath: socketPath)
+        let validSessions = contents.filter { sessionId in
+            let sessionPath = "\(controlPath)/\(sessionId)"
+            let socketPath = "\(sessionPath)/ipc.sock"
+            
+            // Check if it's a directory
+            var isDirectory: ObjCBool = false
+            let exists = fm.fileExists(atPath: sessionPath, isDirectory: &isDirectory)
+            
+            if !exists || !isDirectory.boolValue {
+                logger.debug("⏭️ Skipping \(sessionId) - not a directory")
+                return false
+            }
+            
+            // Check for ipc.sock file
+            let hasSocket = fm.fileExists(atPath: socketPath)
+            if hasSocket {
+                logger.info("✅ Found valid session: \(sessionId) with socket at: \(socketPath)")
+            } else {
+                logger.debug("⏭️ Session \(sessionId) has no ipc.sock file")
+                
+                // List contents of session directory for debugging
+                if let sessionContents = try? fm.contentsOfDirectory(atPath: sessionPath) {
+                    logger.debug("Contents of session \(sessionId): \(sessionContents.joined(separator: ", "))")
+                }
+            }
+            
+            return hasSocket
         }
+        
+        logger.info("🎯 Found \(validSessions.count) valid VibeTunnel session(s): \(validSessions.joined(separator: ", "))")
+        return validSessions
     }
     
     /// Connect to a VibeTunnel session
     func connect(to sessionId: String) {
         let socketPath = NSHomeDirectory() + "/.vibetunnel/control/\(sessionId)/ipc.sock"
         
-        logger.info("Connecting to session \(sessionId) at \(socketPath)")
+        logger.info("🔌 Connecting to session \(sessionId) at \(socketPath)")
         
         // Create Unix domain socket endpoint
         let endpoint = NWEndpoint.unix(path: socketPath)
@@ -53,7 +108,7 @@ class VibeTunnelSocketManager: ObservableObject {
     
     /// Disconnect from current session
     func disconnect() {
-        logger.info("Disconnecting from session")
+        logger.info("🔌 Disconnecting from session")
         connection?.cancel()
         connection = nil
         isConnected = false
@@ -63,14 +118,14 @@ class VibeTunnelSocketManager: ObservableObject {
     /// Send input to the terminal
     func sendInput(_ text: String) {
         guard isConnected else {
-            logger.warning("Cannot send input - not connected")
+            logger.warning("⚠️ Cannot send input - not connected")
             return
         }
         
         let message = IPCMessage.createInput(text)
         connection?.send(content: message.data, completion: .contentProcessed { [weak self] error in
             if let error = error {
-                self?.logger.error("Failed to send input: \(error.localizedDescription)")
+                self?.logger.error("❌ Failed to send input: \(error.localizedDescription)")
             }
         })
     }
@@ -88,20 +143,20 @@ class VibeTunnelSocketManager: ObservableObject {
     private func handleStateChange(_ state: NWConnection.State) {
         switch state {
         case .ready:
-            logger.info("Socket connected and ready")
+            logger.info("✅ Socket connected and ready")
             DispatchQueue.main.async {
                 self.isConnected = true
             }
             startReceiving()
             
         case .failed(let error):
-            logger.error("Socket connection failed: \(error.localizedDescription)")
+            logger.error("❌ Socket connection failed: \(error.localizedDescription)")
             DispatchQueue.main.async {
                 self.isConnected = false
             }
             
         case .cancelled:
-            logger.info("Socket connection cancelled")
+            logger.info("🛑 Socket connection cancelled")
             DispatchQueue.main.async {
                 self.isConnected = false
             }
@@ -130,7 +185,7 @@ class VibeTunnelSocketManager: ObservableObject {
         while receiveBuffer.count >= 8 {
             // Try to parse header
             guard let header = MessageHeader.parse(from: receiveBuffer) else {
-                logger.error("Failed to parse message header")
+                logger.error("❌ Failed to parse message header")
                 receiveBuffer.removeAll()
                 break
             }
@@ -169,15 +224,16 @@ class VibeTunnelSocketManager: ObservableObject {
             
         case .error:
             if let errorText = String(data: payload, encoding: .utf8) {
-                logger.error("Received error from VibeTunnel: \(errorText)")
+                logger.error("❌ Received error from VibeTunnel: \(errorText)")
             }
             
         case .heartbeat:
             // Respond to heartbeat
+            logger.debug("💓 Received heartbeat, responding...")
             sendHeartbeat()
             
         default:
-            logger.debug("Received message type: \(String(describing: header.type))")
+            logger.debug("📨 Received message type: \(String(describing: header.type))")
         }
     }
     

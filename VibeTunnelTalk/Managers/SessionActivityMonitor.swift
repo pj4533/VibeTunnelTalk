@@ -1,10 +1,10 @@
 import Foundation
 import Combine
-import os.log
+import OSLog
 
 /// Monitors terminal output and generates intelligent summaries for narration
 class SessionActivityMonitor: ObservableObject {
-    private let logger = Logger(subsystem: "com.vibetunneltalk", category: "ActivityMonitor")
+    private let logger = AppLogger.activityMonitor
     
     @Published var currentActivity: ActivityState = .idle
     @Published var lastNarration: String = ""
