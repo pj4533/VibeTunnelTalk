@@ -13,7 +13,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
 
     // Response tracking
     private var activeResponseId: String? = nil
-    private var isResponseInProgress = false
+    @Published var isResponseInProgress = false
     private var narrationQueue: [String] = []
     private var pendingNarration: String? = nil
     private var lastNarrationTime = Date(timeIntervalSince1970: 0)
@@ -167,8 +167,15 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
         let combinedContext = narrationQueue.joined(separator: "\n\n")
         narrationQueue.removeAll()
 
-        // Mark as processing
-        isResponseInProgress = true
+        // Mark as processing (must update @Published on main thread)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm:ss.SSS"
+            let timestamp = formatter.string(from: Date())
+            self.logger.info("[OPENAI @ \(timestamp)] 🔄 Setting isResponseInProgress = true (was: \(self.isResponseInProgress))")
+            self.isResponseInProgress = true
+        }
         lastNarrationTime = Date()
 
         logger.info("[OPENAI @ \(timestamp)] 📤 Sending combined narration request (\(combinedContext.count) chars)")
@@ -404,11 +411,18 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
             
             switch type {
             case "response.created":
-                // Track the response ID
+                // Track the response ID from the response object
                 if let response = json["response"] as? [String: Any],
                    let responseId = response["id"] as? String {
                     activeResponseId = responseId
-                    isResponseInProgress = true
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
+                        let formatter = DateFormatter()
+                        formatter.dateFormat = "HH:mm:ss.SSS"
+                        let timestamp = formatter.string(from: Date())
+                        self.logger.info("[OPENAI @ \(timestamp)] 🔄 Setting isResponseInProgress = true from response.created (was: \(self.isResponseInProgress))")
+                        self.isResponseInProgress = true
+                    }
                     let formatter = DateFormatter()
                     formatter.dateFormat = "HH:mm:ss.SSS"
                     let timestamp = formatter.string(from: Date())
@@ -431,11 +445,15 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                     logger.info("[OPENAI @ \(timestamp)] ✅ Response completed: \(responseId)")
                     if responseId == activeResponseId {
                         activeResponseId = nil
-                        isResponseInProgress = false
-
-                        // Process any queued narrations immediately
                         DispatchQueue.main.async { [weak self] in
-                            self?.processNarrationQueue()
+                            guard let self = self else { return }
+                            let formatter = DateFormatter()
+                            formatter.dateFormat = "HH:mm:ss.SSS"
+                            let timestamp = formatter.string(from: Date())
+                            self.logger.info("[OPENAI @ \(timestamp)] 🔄 Setting isResponseInProgress = false (was: \(self.isResponseInProgress))")
+                            self.isResponseInProgress = false
+                            // Process any queued narrations immediately
+                            self.processNarrationQueue()
                         }
                     } else {
                         logger.warning("[OPENAI @ \(timestamp)] ⚠️ Response done for unknown ID: \(responseId), active: \(self.activeResponseId ?? "none")")
@@ -444,20 +462,31 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                     // Response done without ID - still clear the flag
                     logger.warning("[OPENAI @ \(timestamp)] ⚠️ Response done without ID, clearing flag")
                     activeResponseId = nil
-                    isResponseInProgress = false
-
-                    // Process any queued narrations
                     DispatchQueue.main.async { [weak self] in
+                        self?.isResponseInProgress = false
+                        // Process any queued narrations
                         self?.processNarrationQueue()
                     }
                 }
 
             case "response.audio.delta":
-                // Handle audio chunk
+                // Handle audio chunk - this is the actual audio data event
+                // The delta field contains base64-encoded audio data
                 if let delta = json["delta"] as? String,
                    let decodedAudio = Data(base64Encoded: delta) {
                     logger.debug("[OPENAI] 🎵 Received audio chunk: \(decodedAudio.count) bytes")
                     handleAudioChunk(decodedAudio)
+                } else {
+                    logger.warning("[OPENAI] ⚠️ response.audio.delta received but no valid delta data found")
+                }
+
+            case "response.audio_transcript.delta":
+                // Handle audio transcript chunk (not the audio itself)
+                if let delta = json["delta"] as? String {
+                    logger.debug("[OPENAI] 📝 Transcript delta: \(delta)")
+                    DispatchQueue.main.async {
+                        self.transcription += delta
+                    }
                 }
 
             case "response.audio.done":
@@ -466,6 +495,16 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 playBufferedAudio()
                 DispatchQueue.main.async {
                     self.isSpeaking = false
+                }
+
+            case "response.audio_transcript.done":
+                // Audio transcript complete
+                if let transcript = json["transcript"] as? String {
+                    logger.info("[OPENAI] 📝 Full transcript: \(transcript)")
+                    DispatchQueue.main.async {
+                        self.activityNarration.send(transcript)
+                        self.transcription = ""
+                    }
                 }
 
             case "response.text.delta":
@@ -515,6 +554,22 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 // New conversation item created
                 break
 
+            case "response.output_item.added":
+                // New output item added to response
+                logger.debug("[OPENAI] 📦 Output item added")
+
+            case "response.content_part.added":
+                // New content part added to response
+                logger.debug("[OPENAI] 📄 Content part added")
+
+            case "response.content_part.done":
+                // Content part completed
+                logger.debug("[OPENAI] ✅ Content part done")
+
+            case "response.output_item.done":
+                // Output item completed
+                logger.debug("[OPENAI] ✅ Output item done")
+
             case "session.created":
                 // Session created successfully
                 let formatter = DateFormatter()
@@ -557,7 +612,9 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                             logger.error("[OPENAI @ \(timestamp)] 🚫 Rate limit exceeded - backing off")
                             // Clear state and wait longer before retrying
                             activeResponseId = nil
-                            isResponseInProgress = false
+                            DispatchQueue.main.async { [weak self] in
+                                self?.isResponseInProgress = false
+                            }
                             DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
                                 self?.processNarrationQueue()
                             }
@@ -566,7 +623,9 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                             logger.error("[OPENAI @ \(timestamp)] 🚨 Unhandled error code: \(code)")
                             // For unknown errors, reset state and retry
                             activeResponseId = nil
-                            isResponseInProgress = false
+                            DispatchQueue.main.async { [weak self] in
+                                self?.isResponseInProgress = false
+                            }
                             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                                 self?.processNarrationQueue()
                             }
@@ -605,8 +664,15 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
 
 
             default:
-                // Log other message types for debugging
-                logger.debug("[OPENAI] 📩 Received message type: \(type)")
+                // Log unhandled message types with more detail
+                logger.warning("[OPENAI] ⚠️ Unhandled message type: \(type)")
+                // Log if this unhandled event contains audio-like data
+                if let delta = json["delta"] as? String {
+                    logger.warning("[OPENAI] ⚠️ Event '\(type)' contains delta field with \(delta.count) characters")
+                    if let _ = Data(base64Encoded: delta) {
+                        logger.warning("[OPENAI] ⚠️ Delta appears to be valid base64 audio data!")
+                    }
+                }
             }
             
         } catch {

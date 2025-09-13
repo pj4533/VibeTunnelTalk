@@ -142,14 +142,26 @@ class SmartTerminalProcessor: ObservableObject {
                 self.logger.debug("[SAMPLE @ \(timestamp)] Buffer changed, analyzing...")
                 self.lastBufferSnapshot = currentContent
 
-                // Create a diff-based update
+                // Create a diff-based update comparing with what we last SENT (not what we last saw)
                 let diff = self.createDiff(old: self.lastSentContent, new: currentContent)
 
                 // Only send if the diff is significant
                 if diff.count > self.minChangeThreshold {
-                    self.logger.info("[SAMPLE @ \(timestamp)] Sending update: \(diff.count) chars changed")
-                    self.sendUpdateToOpenAI(diff: diff, fullContent: currentContent)
-                    self.lastSentContent = currentContent
+                    // Check if OpenAI is ready to receive
+                    // We need to check this synchronously to avoid race conditions
+                    var isOpenAIBusy = false
+                    DispatchQueue.main.sync {
+                        isOpenAIBusy = self.openAIManager.isResponseInProgress
+                    }
+
+                    if !isOpenAIBusy {
+                        self.logger.info("[SAMPLE @ \(timestamp)] Sending update: \(diff.count) chars changed")
+                        self.sendUpdateToOpenAI(diff: diff, fullContent: currentContent)
+                        self.lastSentContent = currentContent
+                    } else {
+                        self.logger.info("[SAMPLE @ \(timestamp)] OpenAI busy, accumulating \(diff.count) chars of changes")
+                        // Don't update lastSentContent - we'll send accumulated changes when OpenAI is ready
+                    }
                 } else if diff.count > 0 {
                     self.logger.debug("[SAMPLE @ \(timestamp)] Changes too small (\(diff.count) chars), buffering...")
                 }
