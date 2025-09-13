@@ -5,7 +5,6 @@ import OSLog
 struct ConnectedView: View {
     @ObservedObject var socketManager: VibeTunnelSocketManager
     @ObservedObject var openAIManager: OpenAIRealtimeManager
-    @ObservedObject var activityMonitor: SessionActivityMonitor
     
     @State private var isExpanded = true
     @State private var terminalOutput = ""
@@ -33,14 +32,11 @@ struct ConnectedView: View {
             // Activity Display
             ScrollView {
                 VStack(alignment: .leading, spacing: 15) {
-                    // Last Narration
-                    if !activityMonitor.lastNarration.isEmpty {
-                        NarrationCard(
-                            title: "Latest Update",
-                            narration: activityMonitor.lastNarration,
-                            isProcessing: activityMonitor.isProcessing
-                        )
-                    }
+                    // Placeholder for activity display
+                    Text("Claude activity will be narrated by OpenAI")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                        .padding()
                     
                     // Transcription
                     if !openAIManager.transcription.isEmpty {

@@ -18,6 +18,8 @@ struct AppLogger {
         case ipc = "IPC"
         case audio = "Audio"
         case network = "Network"
+        case terminalBuffer = "TerminalBuffer"
+        case terminalProcessor = "TerminalProcessor"
         
         var logger: Logger {
             Logger(subsystem: AppLogger.subsystem, category: self.rawValue)
@@ -55,6 +57,12 @@ struct AppLogger {
     
     /// Logger for network operations
     static let network = Category.network.logger
+
+    /// Logger for terminal buffer management
+    static let terminalBuffer = Category.terminalBuffer.logger
+
+    /// Logger for terminal processing
+    static let terminalProcessor = Category.terminalProcessor.logger
 }
 
 // MARK: - Convenience Extensions

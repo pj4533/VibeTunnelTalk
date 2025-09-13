@@ -18,13 +18,22 @@ class VibeTunnelSocketManager: ObservableObject {
     private var sseClient: VibeTunnelSSEClient?
     private var sseSubscription: AnyCancellable?
 
+    // Smart terminal processor for intelligent data filtering
+    private var terminalProcessor: SmartTerminalProcessor?
+
     // Debug file handle
     private var debugFileHandle: FileHandle?
     private let debugQueue = DispatchQueue(label: "vibetunnel.debug", qos: .background)
 
     // Debug output control
     var debugOutputEnabled = false
-    
+
+    /// Configure the smart terminal processor with OpenAI manager
+    func configureSmartProcessing(with openAIManager: OpenAIRealtimeManager) {
+        terminalProcessor = SmartTerminalProcessor(openAIManager: openAIManager)
+        logger.info("[VIBETUNNEL] Smart terminal processing configured")
+    }
+
     /// Find available VibeTunnel sessions
     func findAvailableSessions() -> [String] {
         // Now that we're not sandboxed, this returns the real home directory
@@ -125,29 +134,16 @@ class VibeTunnelSocketManager: ObservableObject {
     }
     
     private func startSSEClient(sessionId: String) {
-
         // Create and configure SSE client
         sseClient = VibeTunnelSSEClient()
 
-        // Subscribe to terminal output from SSE
-        sseSubscription = sseClient?.terminalOutput
-            .sink { [weak self] output in
-                // Write raw output to debug file if debug is enabled
-                if self?.debugOutputEnabled == true {
-                    self?.writeToDebugFile(output, source: "SSE")
-                }
-
-                // Only log very large output chunks for debugging
-                if output.count > 1000 {
-                    self?.logger.debug("[VIBETUNNEL] 📥 Large SSE chunk: \(output.count) chars")
-                }
-
-                // Remove ANSI escape codes for cleaner processing
-                let cleanText = self?.removeANSIEscapeCodes(from: output) ?? output
-
-                // Forward to our terminal output subject
-                self?.terminalOutput.send(cleanText)
-            }
+        // Start the smart terminal processor
+        if let processor = terminalProcessor {
+            logger.info("[VIBETUNNEL] Starting smart terminal processing")
+            processor.startProcessing(sseClient: sseClient!)
+        } else {
+            logger.error("[VIBETUNNEL] ❌ Terminal processor not configured!")
+        }
 
         // Connect to SSE stream
         sseClient?.connect(sessionId: sessionId)
@@ -155,6 +151,9 @@ class VibeTunnelSocketManager: ObservableObject {
     
     /// Disconnect from current session
     func disconnect() {
+
+        // Stop terminal processor if active
+        terminalProcessor?.stopProcessing()
 
         // Stop IPC socket connection
         connection?.cancel()
@@ -395,9 +394,14 @@ class VibeTunnelSocketManager: ObservableObject {
             let timestamp = formatter.string(from: Date())
             let filename = "\(sessionId)_\(timestamp).txt"
 
-            // Get home directory and create file path
-            let homeDir = FileManager.default.homeDirectoryForCurrentUser
-            let filePath = homeDir.appendingPathComponent(filename)
+            // Create logs directory in Library/Logs/VibeTunnelTalk
+            let logsDir = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Logs/VibeTunnelTalk")
+
+            // Create directory if it doesn't exist
+            try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+
+            let filePath = logsDir.appendingPathComponent(filename)
 
             // Create the file
             FileManager.default.createFile(atPath: filePath.path, contents: nil, attributes: nil)

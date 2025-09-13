@@ -2,15 +2,33 @@ import Foundation
 import Combine
 import OSLog
 
+/// Represents an asciinema event from VibeTunnel
+struct AsciinemaEvent {
+    let timestamp: Double
+    let type: EventType
+    let data: String
+
+    enum EventType: String {
+        case output = "o"
+        case input = "i"
+        case resize = "r"
+        case exit = "exit"
+    }
+}
+
 /// Server-Sent Events client for VibeTunnel terminal output streaming
 class VibeTunnelSSEClient: NSObject {
     private let logger = AppLogger.network
-    
+
     let terminalOutput = PassthroughSubject<String, Never>()
-    
+    let asciinemaEvent = PassthroughSubject<AsciinemaEvent, Never>()
+
     private var task: URLSessionDataTask?
     private var session: URLSession?
     private var buffer = Data()
+
+    // Track session start time for relative timestamps
+    private var sessionStartTime: Date?
     
     override init() {
         super.init()
@@ -27,14 +45,17 @@ class VibeTunnelSSEClient: NSObject {
     /// Connect to the SSE stream for a session
     func connect(sessionId: String, port: Int = 4020) {
         disconnect() // Ensure we're not already connected
-        
+
+        // Reset session start time
+        sessionStartTime = Date()
+
         // VibeTunnel's SSE endpoint
         let urlString = "http://localhost:\(port)/api/sessions/\(sessionId)/stream"
         guard let url = URL(string: urlString) else {
             logger.error("[SSE] ❌ Invalid URL: \(urlString)")
             return
         }
-        
+
         // Connecting to SSE stream
         
         var request = URLRequest(url: url)
@@ -119,11 +140,11 @@ class VibeTunnelSSEClient: NSObject {
             // Skip heartbeats and connection confirmations
             return
         }
-        
+
         // Parse SSE event
         var eventType = ""
         var eventData = ""
-        
+
         let lines = event.components(separatedBy: "\n")
         for line in lines {
             if line.hasPrefix("event:") {
@@ -136,30 +157,83 @@ class VibeTunnelSSEClient: NSObject {
                 eventData += data
             }
         }
-        
+
         // Handle different event types
         if eventType.isEmpty || eventType == "data" {
-            // Terminal output data
+            // Terminal output data - should be asciinema JSON
             if !eventData.isEmpty {
-                // Remove verbose terminal data logging
-                
-                // Parse JSON data if it's wrapped
-                if let jsonData = eventData.data(using: .utf8),
-                   let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                   let content = json["data"] as? String {
-                    // Wrapped in JSON
-                    DispatchQueue.main.async {
-                        self.terminalOutput.send(content)
-                    }
-                } else {
-                    // Raw text data
-                    DispatchQueue.main.async {
-                        self.terminalOutput.send(eventData)
-                    }
-                }
+                parseAsciinemaEvent(eventData)
             }
         } else {
             // Other event type
+        }
+    }
+
+    /// Parse asciinema JSON event
+    private func parseAsciinemaEvent(_ jsonString: String) {
+        guard let data = jsonString.data(using: .utf8) else { return }
+
+        do {
+            // Try to parse as JSON array (asciinema format)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [Any] {
+                // Check if it's a header (has version field)
+                if let header = json as? [String: Any],
+                   let _ = header["version"] as? Int {
+                    // This is the header, contains terminal dimensions
+                    if let cols = header["width"] as? Int,
+                       let rows = header["height"] as? Int {
+                        logger.debug("[SSE] Terminal dimensions: \(cols)x\(rows)")
+                    }
+                    return
+                }
+
+                // Handle exit event [exit, code, timestamp]
+                if let first = json.first as? String, first == "exit" {
+                    if json.count >= 2, let exitCode = json[1] as? Int {
+                        logger.info("[SSE] Session exited with code: \(exitCode)")
+                    }
+                    return
+                }
+
+                // Standard asciinema event: [timestamp, type, data]
+                if json.count >= 3,
+                   let timestamp = json[0] as? Double,
+                   let typeStr = json[1] as? String,
+                   let data = json[2] as? String {
+
+                    // Create AsciinemaEvent
+                    if let eventType = AsciinemaEvent.EventType(rawValue: typeStr) {
+                        let event = AsciinemaEvent(
+                            timestamp: timestamp,
+                            type: eventType,
+                            data: data
+                        )
+
+                        DispatchQueue.main.async {
+                            // Emit the structured event
+                            self.asciinemaEvent.send(event)
+
+                            // For backward compatibility, also send output events as raw text
+                            if eventType == .output {
+                                self.terminalOutput.send(data)
+                            }
+                        }
+                    }
+                }
+            } else if let header = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                // Alternative header format (object with version)
+                if let _ = header["version"] as? Int {
+                    if let cols = header["width"] as? Int,
+                       let rows = header["height"] as? Int {
+                        logger.debug("[SSE] Terminal dimensions: \(cols)x\(rows)")
+                    }
+                }
+            }
+        } catch {
+            // If not JSON, treat as raw text (fallback)
+            DispatchQueue.main.async {
+                self.terminalOutput.send(jsonString)
+            }
         }
     }
 }
