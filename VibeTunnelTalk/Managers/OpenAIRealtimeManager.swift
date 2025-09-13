@@ -116,7 +116,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
 
         // Queue the narration request
         narrationQueue.append(context)
-        logger.info("[OPENAI @ \(timestamp)] 📥 Queued narration request (queue size: \(self.narrationQueue.count))")
+        logger.info("[OPENAI @ \(timestamp)] 📥 Queued narration request (queue size: \(self.narrationQueue.count), isResponseInProgress: \(self.isResponseInProgress), activeResponseId: \(self.activeResponseId ?? "none"))")
 
         // Process queue if not currently processing a response
         processNarrationQueue()
@@ -574,6 +574,36 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                     }
                 }
                 
+            case "rate_limits.updated":
+                // Handle rate limits update - only log if there's an issue
+                let formatter = DateFormatter()
+                formatter.dateFormat = "HH:mm:ss.SSS"
+                let timestamp = formatter.string(from: Date())
+
+                // Parse the rate limit details and only warn if needed
+                if let rateLimits = json["rate_limits"] as? [[String: Any]] {
+                    for rateLimit in rateLimits {
+                        if let name = rateLimit["name"] as? String,
+                           let limit = rateLimit["limit"] as? Int,
+                           let remaining = rateLimit["remaining"] as? Int,
+                           let resetSeconds = rateLimit["reset_seconds"] as? Double {
+
+                            let percentUsed = Double(limit - remaining) / Double(limit) * 100
+
+                            if remaining == 0 {
+                                // Log full details when exhausted
+                                logger.error("[OPENAI @ \(timestamp)] 🚫 RATE LIMIT EXHAUSTED: \(name) - 0/\(limit) remaining, resets in \(resetSeconds)s")
+                                logger.error("[OPENAI @ \(timestamp)] Response state - isResponseInProgress: \(self.isResponseInProgress), activeResponseId: \(self.activeResponseId ?? "none")")
+                            } else if percentUsed > 90 {
+                                // Only warn when usage is very high (>90%)
+                                logger.warning("[OPENAI @ \(timestamp)] ⚠️ Rate limit high usage: \(name) - \(remaining)/\(limit) remaining (\(String(format: "%.1f", percentUsed))% used), resets in \(resetSeconds)s")
+                            }
+                            // Don't log anything for normal usage
+                        }
+                    }
+                }
+
+
             default:
                 // Log other message types for debugging
                 logger.debug("[OPENAI] 📩 Received message type: \(type)")
