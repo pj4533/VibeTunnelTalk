@@ -68,14 +68,12 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
         
         // Create URLRequest exactly like swift-realtime-openai
         var request = URLRequest(url: URL(string: "wss://api.openai.com/v1/realtime")!.appending(queryItems: [
-            URLQueryItem(name: "model", value: "gpt-4o-realtime-preview-2024-10-01")
+            URLQueryItem(name: "model", value: "gpt-4o-realtime-preview-2024-12-17")
         ]))
         request.addValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
         request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         logger.info("[OPENAI] 📋 Request URL: \(request.url?.absoluteString ?? "nil")")
-
-        logger.info("[OPENAI] 📋 Headers: \(request.allHTTPHeaderFields ?? [:])")
         
         // Use URLSession.shared instead of custom session - this is how swift-realtime-openai does it
         webSocketTask = URLSession.shared.webSocketTask(with: request)
@@ -108,7 +106,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 "role": "system",
                 "content": [
                     [
-                        "type": "text",
+                        "type": "input_text",
                         "text": "Terminal Update: \(context)"
                     ]
                 ]
