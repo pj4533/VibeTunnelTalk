@@ -77,21 +77,15 @@ struct ConnectedView: View {
             .padding()
         }
         .onReceive(socketManager.terminalOutput) { output in
-            logger.info("[CONNECTED-VIEW] 📨 Received terminal output: \(output.count) characters")
-            logger.debug("[CONNECTED-VIEW]    Preview: \"\(output.prefix(100))\"")
-            
             terminalOutput += output
             // Keep last 1000 lines
             let lines = terminalOutput.components(separatedBy: .newlines)
             if lines.count > 1000 {
                 terminalOutput = lines.suffix(1000).joined(separator: "\n")
             }
-            
-            logger.info("[CONNECTED-VIEW] 📊 Total terminal buffer: \(terminalOutput.count) characters")
         }
         .onAppear {
-            logger.info("[CONNECTED-VIEW] 🎯 View appeared - connected to session: \(socketManager.currentSessionId ?? "unknown")")
-            logger.info("[CONNECTED-VIEW] 📡 Socket connected: \(socketManager.isConnected)")
+            // View appeared
         }
     }
     

@@ -35,7 +35,7 @@ class VibeTunnelSSEClient: NSObject {
             return
         }
         
-        logger.info("[SSE] 🔌 Connecting to SSE stream: \(urlString)")
+        // Connecting to SSE stream
         
         var request = URLRequest(url: url)
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -44,16 +44,13 @@ class VibeTunnelSSEClient: NSObject {
         
         // Try to get auth token from running VibeTunnel process
         if let authToken = getVibeTunnelAuthToken() {
-            logger.info("[SSE] 🔑 Using local auth token from VibeTunnel process")
             request.setValue(authToken, forHTTPHeaderField: "x-vibetunnel-local")
-        } else {
-            logger.warning("[SSE] ⚠️ No auth token found, connection may fail")
         }
         
         task = session?.dataTask(with: request)
         task?.resume()
         
-        logger.info("[SSE] ✅ SSE connection initiated for session: \(sessionId)")
+        // SSE connection initiated
     }
     
     /// Get the auth token from running VibeTunnel process
@@ -73,11 +70,11 @@ class VibeTunnelSSEClient: NSObject {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                !output.isEmpty {
-                logger.debug("[SSE] 🔑 Found auth token: \(String(output.prefix(20)))...")
+                // Found auth token
                 return output
             }
         } catch {
-            logger.error("[SSE] ❌ Failed to get auth token: \(error)")
+            // Failed to get auth token
         }
         
         return nil
@@ -85,7 +82,6 @@ class VibeTunnelSSEClient: NSObject {
     
     /// Disconnect from the SSE stream
     func disconnect() {
-        logger.info("[SSE] 🔌 Disconnecting from SSE stream")
         task?.cancel()
         task = nil
         buffer.removeAll()
@@ -120,11 +116,7 @@ class VibeTunnelSSEClient: NSObject {
     private func processEvent(_ event: String) {
         // Skip heartbeats and connection confirmations
         if event.hasPrefix(":") {
-            if event == ":ok" {
-                logger.info("[SSE] ✅ Connection confirmed")
-            } else if event == ":heartbeat" {
-                logger.debug("[SSE] 💗 Heartbeat received")
-            }
+            // Skip heartbeats and connection confirmations
             return
         }
         
@@ -149,7 +141,7 @@ class VibeTunnelSSEClient: NSObject {
         if eventType.isEmpty || eventType == "data" {
             // Terminal output data
             if !eventData.isEmpty {
-                logger.debug("[SSE] 📺 Received terminal data: \(eventData.count) chars")
+                // Remove verbose terminal data logging
                 
                 // Parse JSON data if it's wrapped
                 if let jsonData = eventData.data(using: .utf8),
@@ -167,7 +159,7 @@ class VibeTunnelSSEClient: NSObject {
                 }
             }
         } else {
-            logger.debug("[SSE] 📨 Received event type: \(eventType)")
+            // Other event type
         }
     }
 }
@@ -176,10 +168,8 @@ class VibeTunnelSSEClient: NSObject {
 extension VibeTunnelSSEClient: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         if let httpResponse = response as? HTTPURLResponse {
-            logger.info("[SSE] 📡 Response received: \(httpResponse.statusCode)")
-            
             if httpResponse.statusCode == 200 {
-                logger.info("[SSE] ✅ SSE stream connected successfully")
+                logger.info("[SSE] ✅ Connected")
                 completionHandler(.allow)
             } else {
                 logger.error("[SSE] ❌ Failed to connect: HTTP \(httpResponse.statusCode)")
@@ -193,21 +183,15 @@ extension VibeTunnelSSEClient: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         // Append to buffer and process
         buffer.append(data)
-        
-        logger.debug("[SSE] 📥 Received \(data.count) bytes, buffer size: \(self.buffer.count)")
-        
+        // Remove verbose logging - only errors will be logged
         processBuffer()
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error = error {
-            if (error as NSError).code == NSURLErrorCancelled {
-                logger.info("[SSE] 🛑 Connection cancelled")
-            } else {
+            if (error as NSError).code != NSURLErrorCancelled {
                 logger.error("[SSE] ❌ Connection error: \(error.localizedDescription)")
             }
-        } else {
-            logger.info("[SSE] 🏁 Connection completed")
         }
         
         buffer.removeAll()

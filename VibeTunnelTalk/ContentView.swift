@@ -114,23 +114,18 @@ struct ContentView: View {
     }
     
     private func refreshSessions() {
-        logger.info("[UI] 🔄 Refreshing VibeTunnel sessions")
         availableSessions = socketManager.findAvailableSessions()
-        logger.info("[UI] 📋 Found \(availableSessions.count) session(s)")
         
         if availableSessions.count == 1 {
             selectedSession = availableSessions.first
-            logger.info("[UI] 🎯 Auto-selected single session: \(selectedSession ?? "nil")")
         }
     }
     
     private func connectToSession() {
         guard let session = selectedSession else { 
-            logger.warning("[UI] ⚠️ No session selected for connection")
             return 
         }
         
-        logger.info("[UI] 🚀 Starting connection to session: \(session)")
         isConnecting = true
         
         // Connect to VibeTunnel session
@@ -138,10 +133,7 @@ struct ContentView: View {
         
         // Connect to OpenAI
         if hasStoredAPIKey {
-            logger.info("[UI] 🤖 Initiating OpenAI connection")
             openAIManager.connect()
-        } else {
-            logger.warning("[UI] ⚠️ No API key stored, skipping OpenAI connection")
         }
         
         isConnecting = false

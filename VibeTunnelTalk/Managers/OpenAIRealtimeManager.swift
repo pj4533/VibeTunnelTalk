@@ -64,7 +64,6 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     func connect() {
         // Don't connect without an API key
         guard !apiKey.isEmpty else { 
-            logger.warning("[OPENAI-CONNECTION] ⚠️ Cannot connect without API key")
             return 
         }
         
@@ -320,7 +319,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 
             case "response.function_call_arguments.delta":
                 // Handle function call arguments
-                logger.debug("[OPENAI-MSG] Function call arguments delta received")
+                break
                 
             case "response.function_call_arguments.done":
                 // Function call complete
@@ -337,15 +336,15 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 
             case "input_audio_buffer.speech_started":
                 // User started speaking
-                logger.debug("[OPENAI-MSG] 🎤 Speech started")
+                break
                 
             case "input_audio_buffer.speech_stopped":
                 // User stopped speaking
-                logger.debug("[OPENAI-MSG] 🔇 Speech stopped")
+                break
                 
             case "conversation.item.created":
                 // New conversation item created
-                logger.debug("[OPENAI-MSG] Conversation item created")
+                break
                 
             case "error":
                 // Handle error
@@ -354,7 +353,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 }
                 
             default:
-                logger.debug("[OPENAI-MSG] Received event type: \(type)")
+                break
             }
             
         } catch {
@@ -482,11 +481,10 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
 
 extension OpenAIRealtimeManager: URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        logger.info("[OPENAI-CONNECTION] ✅ WebSocket connected")
+        // WebSocket connected
     }
     
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        logger.info("[OPENAI-CONNECTION] 🔌 WebSocket closed with code: \(String(describing: closeCode))")
         handleDisconnection()
     }
 }
