@@ -19,13 +19,33 @@ class SessionActivityMonitor: ObservableObject {
     private var consecutiveEmptyLines = 0
     private var lastWasPrompt = false
     private var hasSignificantContent = false
+    private var currentActivity: ActivityType = .idle
+    private var activityStartTime = Date()
+    private var recentActivities: [String] = []
+    private var lastSignificantUpdate = Date()
+
+    // Activity tracking
+    private enum ActivityType {
+        case idle
+        case thinking
+        case task(name: String)
+        case readingFiles
+        case writingCode
+        case runningCommand
+        case analyzing
+        case searching
+    }
 
     // Minimum time between chunks to avoid spamming
-    private let minTimeBetweenChunks: TimeInterval = 3.0
+    private let minTimeBetweenChunks: TimeInterval = 2.0
+    private let significantUpdateInterval: TimeInterval = 5.0
 
     /// Process new terminal output
     func processOutput(_ text: String) {
         outputBuffer += text
+
+        // Update activity type based on patterns
+        detectActivityChange(in: text)
 
         // Track if we have meaningful content (not just system messages)
         if containsSignificantContent(text) {
@@ -39,6 +59,110 @@ class SessionActivityMonitor: ObservableObject {
     }
 
     // MARK: - Private Methods
+
+    /// Detect activity changes from Claude's output patterns
+    private func detectActivityChange(in text: String) {
+        let lowercased = text.lowercased()
+        let previousActivity = currentActivity
+
+        // Detect Task starts (e.g., "Task(Analyze project structure)")
+        if text.contains("Task(") {
+            if let taskName = extractTaskName(from: text) {
+                currentActivity = .task(name: taskName)
+                activityStartTime = Date()
+                logger.info("[ACTIVITY] 🎯 Task started: \(taskName)")
+            }
+        }
+        // Detect thinking/planning statements
+        else if lowercased.contains("i'll analyze") ||
+                lowercased.contains("let me analyze") ||
+                lowercased.contains("i'll examine") ||
+                lowercased.contains("let me look") ||
+                lowercased.contains("i'll check") ||
+                lowercased.contains("let me check") {
+            currentActivity = .analyzing
+            activityStartTime = Date()
+        }
+        // Detect file operations
+        else if text.contains("Read(") ||
+                text.contains("Reading file") ||
+                text.contains("cat -n") ||
+                lowercased.contains("reading") {
+            currentActivity = .readingFiles
+            activityStartTime = Date()
+        }
+        // Detect code writing
+        else if text.contains("Edit(") ||
+                text.contains("Write(") ||
+                text.contains("MultiEdit(") ||
+                lowercased.contains("modifying") ||
+                lowercased.contains("updating") ||
+                lowercased.contains("creating") {
+            currentActivity = .writingCode
+            activityStartTime = Date()
+        }
+        // Detect command execution
+        else if text.contains("Bash(") ||
+                text.contains("Running:") ||
+                text.contains("Executing:") ||
+                text.contains("$") && text.count < 200 {
+            currentActivity = .runningCommand
+            activityStartTime = Date()
+        }
+        // Detect searching
+        else if text.contains("Grep(") ||
+                text.contains("Glob(") ||
+                text.contains("WebSearch(") ||
+                lowercased.contains("searching") ||
+                lowercased.contains("looking for") {
+            currentActivity = .searching
+            activityStartTime = Date()
+        }
+        // Detect completion
+        else if text.contains("Done (") ||
+                text.contains("✓") ||
+                text.contains("completed") ||
+                text.contains("finished") {
+            // Activity completed - trigger update
+            if case .task(let name) = currentActivity {
+                recentActivities.append("Completed: \(name)")
+            }
+            currentActivity = .idle
+        }
+
+        // If activity changed, mark as significant
+        if !areActivitiesEqual(previousActivity, currentActivity) {
+            lastSignificantUpdate = Date()
+            hasSignificantContent = true
+        }
+    }
+
+    /// Extract task name from Task(...) pattern
+    private func extractTaskName(from text: String) -> String? {
+        if let range = text.range(of: "Task\\(([^)]+)\\)", options: .regularExpression) {
+            let taskText = String(text[range])
+            let name = taskText
+                .replacingOccurrences(of: "Task(", with: "")
+                .replacingOccurrences(of: ")", with: "")
+            return name
+        }
+        return nil
+    }
+
+    /// Compare activity types
+    private func areActivitiesEqual(_ lhs: ActivityType, _ rhs: ActivityType) -> Bool {
+        switch (lhs, rhs) {
+        case (.idle, .idle), (.thinking, .thinking),
+             (.readingFiles, .readingFiles), (.writingCode, .writingCode),
+             (.runningCommand, .runningCommand), (.analyzing, .analyzing),
+             (.searching, .searching):
+            return true
+        case (.task(let name1), .task(let name2)):
+            return name1 == name2
+        default:
+            return false
+        }
+    }
 
     /// Determine if text contains significant user/Claude content
     private func containsSignificantContent(_ text: String) -> Bool {
@@ -79,12 +203,36 @@ class SessionActivityMonitor: ObservableObject {
     /// Detect natural breakpoints for intelligent chunking
     private func shouldSendChunk(for text: String) -> Bool {
         // Don't send if buffer is too small or no significant content
-        guard outputBuffer.count > 50 && hasSignificantContent else {
+        guard outputBuffer.count > 30 && hasSignificantContent else {
             return false
         }
 
-        // Don't send too frequently
         let timeSinceLastChunk = Date().timeIntervalSince(lastChunkSentTime)
+        let timeSinceSignificantUpdate = Date().timeIntervalSince(lastSignificantUpdate)
+
+        // PRIORITY 1: Activity changes should trigger immediate updates
+        if timeSinceSignificantUpdate < 0.5 && timeSinceLastChunk >= 1.5 {
+            // Activity just changed, send an update
+            return true
+        }
+
+        // PRIORITY 2: Task starts always trigger narration
+        if text.contains("Task(") && timeSinceLastChunk >= 1.0 {
+            return true
+        }
+
+        // PRIORITY 3: Important Claude statements
+        let lowercased = text.lowercased()
+        if (lowercased.contains("i'll") ||
+            lowercased.contains("let me") ||
+            lowercased.contains("i'm going to") ||
+            lowercased.contains("i found") ||
+            lowercased.contains("i've")) &&
+           timeSinceLastChunk >= minTimeBetweenChunks {
+            return true
+        }
+
+        // Don't send too frequently for non-priority updates
         guard timeSinceLastChunk >= minTimeBetweenChunks else {
             return false
         }
@@ -100,20 +248,31 @@ class SessionActivityMonitor: ObservableObject {
         }
 
         // User input is a natural breakpoint
-        if text.contains("user:") || text.contains("Human:") {
+        if text.contains("user:") || text.contains("Human:") || text.contains(">") {
             return true
         }
 
-        // Assistant starting response
-        if text.contains("assistant:") || text.contains("Claude:") {
-            return false  // Wait for the full response
+        // Tool operation results
+        if text.contains("Done (") && text.contains("tokens") {
+            return true  // Task completion
+        }
+
+        // File modifications
+        if text.contains("has been updated") ||
+           text.contains("has been created") ||
+           text.contains("File saved") {
+            return true
         }
 
         // Tool invocation boundaries
         if text.contains("<function_calls>") {
             toolDepth += 1
             isInToolOutput = true
-            return false  // Wait for completion
+            // Send update about starting a tool operation
+            if timeSinceLastChunk >= 2.0 {
+                return true
+            }
+            return false
         }
 
         if text.contains("</function_calls>") || text.contains("</function_results>") {
@@ -137,25 +296,21 @@ class SessionActivityMonitor: ObservableObject {
             return true
         }
 
-        // File operation completions
-        if text.contains("File saved") || text.contains("File created") ||
-           text.contains("File deleted") || text.contains("Changes applied") {
+        // Send periodic updates during long activities
+        if !areActivitiesEqual(currentActivity, .idle) && timeSinceLastChunk >= significantUpdateInterval {
             return true
         }
 
-        // Command prompt (terminal ready for input)
-        if text.contains("$") && text.count < 100 {
-            lastWasPrompt = true
-            return true
-        }
-
-        // Don't send while in tool output unless it gets too large
-        if isInToolOutput && outputBuffer.count < 3000 {
+        // Don't send while in tool output unless it gets too large or timeout
+        if isInToolOutput {
+            if outputBuffer.count > 2000 || timeSinceLastChunk > 8.0 {
+                return true
+            }
             return false
         }
 
         // Send if buffer is getting large
-        if outputBuffer.count > 2500 {
+        if outputBuffer.count > 1500 {
             return true
         }
 
@@ -228,26 +383,48 @@ class SessionActivityMonitor: ObservableObject {
 
         let filteredContent = filteredLines.joined(separator: "\n")
 
+        // Create activity context
+        var activityContext = ""
+        switch currentActivity {
+        case .task(let name):
+            activityContext = "Claude is working on task: \(name)"
+        case .analyzing:
+            activityContext = "Claude is analyzing the codebase"
+        case .readingFiles:
+            activityContext = "Claude is reading files"
+        case .writingCode:
+            activityContext = "Claude is modifying code"
+        case .runningCommand:
+            activityContext = "Claude is running a command"
+        case .searching:
+            activityContext = "Claude is searching for information"
+        case .thinking:
+            activityContext = "Claude is thinking about the approach"
+        case .idle:
+            activityContext = ""
+        }
+
         return """
         Terminal output from Claude Code session:
-
+        \(activityContext.isEmpty ? "" : "\nCurrent activity: \(activityContext)\n")
         ```
         \(filteredContent)
         ```
 
-        Provide a brief, natural narration (1-2 sentences) focusing ONLY on:
-        - What the user asked Claude to do
-        - What Claude is currently working on or just completed
-        - Any important results, errors, or milestones
+        Provide a brief, natural narration (1-2 sentences) about what's happening.
 
-        DO NOT mention:
-        - System settings, permissions, or sandboxing
-        - File paths unless they're central to what's being done
-        - Technical implementation details unless they're the main focus
-        - Tool names or function calls
+        Focus on:
+        - If Claude just started a task, mention what the task is
+        - If Claude is modifying files, mention what's being changed
+        - If there's an error or success, mention the outcome
+        - If Claude completed something, summarize what was accomplished
 
-        Speak conversationally, as if explaining to someone what's happening in the session.
-        Focus on the WHAT and WHY, not the HOW.
+        Keep it conversational and concise. Don't repeat obvious information.
+        Example good narrations:
+        - "Claude is starting to analyze the project structure"
+        - "Claude found several files and is now examining the code"
+        - "Looks like Claude is updating the configuration files"
+        - "Claude completed the analysis and found what was needed"
         """
     }
 
@@ -262,6 +439,10 @@ class SessionActivityMonitor: ObservableObject {
         toolDepth = 0
         consecutiveEmptyLines = 0
         lastWasPrompt = false
+        currentActivity = .idle
+        activityStartTime = Date()
+        recentActivities = []
+        lastSignificantUpdate = Date()
     }
 }
 
