@@ -15,13 +15,14 @@ struct ContentView: View {
     @StateObject private var openAIManager = OpenAIRealtimeManager()
     @StateObject private var activityMonitor = SessionActivityMonitor()
     @StateObject private var commandProcessor = VoiceCommandProcessor()
-    
+
     @State private var availableSessions: [String] = []
     @State private var selectedSession: String?
     @State private var isConnecting = false
     @State private var showSettings = false
     @State private var hasStoredAPIKey = false
-    
+    @AppStorage("debugOutputEnabled") private var debugOutputEnabled = false
+
     @State private var cancelBag = Set<AnyCancellable>()
     
     var body: some View {
@@ -77,7 +78,7 @@ struct ContentView: View {
             refreshSessions()
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView {
+            SettingsView(debugOutputEnabled: $debugOutputEnabled) {
                 // Settings saved, reload the API key
                 if let key = KeychainHelper.loadAPIKey() {
                     openAIManager.updateAPIKey(key)
@@ -123,20 +124,23 @@ struct ContentView: View {
     }
     
     private func connectToSession() {
-        guard let session = selectedSession else { 
-            return 
+        guard let session = selectedSession else {
+            return
         }
-        
+
         isConnecting = true
-        
+
+        // Set debug mode before connecting
+        socketManager.debugOutputEnabled = debugOutputEnabled
+
         // Connect to VibeTunnel session
         socketManager.connect(to: session)
-        
+
         // Connect to OpenAI
         if hasStoredAPIKey {
             openAIManager.connect()
         }
-        
+
         isConnecting = false
     }
 }
@@ -207,45 +211,65 @@ struct APIKeySetupView: View {
 }
 
 struct SettingsView: View {
+    @Binding var debugOutputEnabled: Bool
     let onSave: () -> Void
     @Environment(\.dismiss) var dismiss
     @State private var apiKeyText = ""
     @State private var showingSaveError = false
-    
-    init(onSave: @escaping () -> Void) {
+
+    init(debugOutputEnabled: Binding<Bool>, onSave: @escaping () -> Void) {
+        self._debugOutputEnabled = debugOutputEnabled
         self.onSave = onSave
         // Load current key from Keychain to show in field
         _apiKeyText = State(initialValue: KeychainHelper.loadAPIKey() ?? "")
     }
-    
+
     var body: some View {
         VStack(spacing: 20) {
             Text("Settings")
                 .font(.title2)
                 .fontWeight(.semibold)
-            
-            VStack(alignment: .leading, spacing: 10) {
-                Text("OpenAI API Key")
-                    .font(.headline)
-                
-                SecureField("API Key", text: $apiKeyText)
-                    .textFieldStyle(.roundedBorder)
+
+            VStack(alignment: .leading, spacing: 15) {
+                // API Key section
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("OpenAI API Key")
+                        .font(.headline)
+
+                    SecureField("API Key", text: $apiKeyText)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                Divider()
+
+                // Debug settings section
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Debug Settings")
+                        .font(.headline)
+
+                    Toggle("Save debug output to file", isOn: $debugOutputEnabled)
+                        .toggleStyle(.checkbox)
+
+                    Text("When enabled, creates a debug log file in your home directory")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            
+
             if showingSaveError {
                 Text("Failed to save API key to Keychain")
                     .foregroundColor(.red)
                     .font(.caption)
             }
-            
+
             HStack {
                 Spacer()
-                
+
                 Button("Cancel") {
                     dismiss()
                 }
-                
+
                 Button("Save") {
                     // Save to Keychain
                     if KeychainHelper.saveAPIKey(apiKeyText) {
@@ -260,7 +284,7 @@ struct SettingsView: View {
             }
         }
         .padding()
-        .frame(width: 400, height: showingSaveError ? 220 : 200)
+        .frame(width: 450, height: showingSaveError ? 320 : 300)
     }
 }
 

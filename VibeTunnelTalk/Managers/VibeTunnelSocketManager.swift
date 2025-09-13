@@ -5,18 +5,25 @@ import OSLog
 
 class VibeTunnelSocketManager: ObservableObject {
     private let logger = AppLogger.socketManager
-    
+
     @Published var isConnected = false
     @Published var currentSessionId: String?
     let terminalOutput = PassthroughSubject<String, Never>()
-    
+
     private var connection: NWConnection?
     private var receiveBuffer = Data()
     private let queue = DispatchQueue(label: "vibetunnel.socket", qos: .userInitiated)
-    
+
     // SSE client for terminal output streaming
     private var sseClient: VibeTunnelSSEClient?
     private var sseSubscription: AnyCancellable?
+
+    // Debug file handle
+    private var debugFileHandle: FileHandle?
+    private let debugQueue = DispatchQueue(label: "vibetunnel.debug", qos: .background)
+
+    // Debug output control
+    var debugOutputEnabled = false
     
     /// Find available VibeTunnel sessions
     func findAvailableSessions() -> [String] {
@@ -90,36 +97,46 @@ class VibeTunnelSocketManager: ObservableObject {
     func connect(to sessionId: String) {
         let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
         let socketPath = homeDir + "/.vibetunnel/control/\(sessionId)/ipc.sock"
-        
+
         logger.info("[VIBETUNNEL] Connecting to session: \(sessionId)")
-        
+
+        // Create debug file for this session if debug is enabled
+        if debugOutputEnabled {
+            createDebugFile(sessionId: sessionId)
+        }
+
         // Create Unix domain socket endpoint
         let endpoint = NWEndpoint.unix(path: socketPath)
-        
+
         // Use .tcp parameters for Unix domain socket (this is correct in Network.framework)
         let parameters = NWParameters.tcp
-        
+
         connection = NWConnection(to: endpoint, using: parameters)
-        
+
         connection?.stateUpdateHandler = { [weak self] state in
             self?.handleStateChange(state)
         }
-        
+
         connection?.start(queue: queue)
         currentSessionId = sessionId
-        
+
         // Also start SSE client for terminal output
         startSSEClient(sessionId: sessionId)
     }
     
     private func startSSEClient(sessionId: String) {
-        
+
         // Create and configure SSE client
         sseClient = VibeTunnelSSEClient()
-        
+
         // Subscribe to terminal output from SSE
         sseSubscription = sseClient?.terminalOutput
             .sink { [weak self] output in
+                // Write raw output to debug file if debug is enabled
+                if self?.debugOutputEnabled == true {
+                    self?.writeToDebugFile(output, source: "SSE")
+                }
+
                 // Only log very large output chunks for debugging
                 if output.count > 1000 {
                     self?.logger.debug("[VIBETUNNEL] 📥 Large SSE chunk: \(output.count) chars")
@@ -131,24 +148,27 @@ class VibeTunnelSocketManager: ObservableObject {
                 // Forward to our terminal output subject
                 self?.terminalOutput.send(cleanText)
             }
-        
+
         // Connect to SSE stream
         sseClient?.connect(sessionId: sessionId)
     }
     
     /// Disconnect from current session
     func disconnect() {
-        
+
         // Stop IPC socket connection
         connection?.cancel()
         connection = nil
-        
+
         // Stop SSE client
         sseClient?.disconnect()
         sseClient = nil
         sseSubscription?.cancel()
         sseSubscription = nil
-        
+
+        // Close debug file
+        closeDebugFile()
+
         isConnected = false
         currentSessionId = nil
     }
@@ -268,8 +288,15 @@ class VibeTunnelSocketManager: ObservableObject {
     }
     
     private func handleReceivedData(_ data: Data) {
+        // Write raw IPC data to debug file if debug is enabled
+        if debugOutputEnabled {
+            if let hexString = data.map({ String(format: "%02hhx", $0) }).joined(separator: " ").data(using: .utf8) {
+                writeToDebugFile(String(data: hexString, encoding: .utf8) ?? "", source: "IPC_HEX")
+            }
+        }
+
         receiveBuffer.append(data)
-        
+
         // Process complete messages from buffer
         while receiveBuffer.count >= 8 {
             // Try to parse header
@@ -278,22 +305,27 @@ class VibeTunnelSocketManager: ObservableObject {
                 receiveBuffer.removeAll()
                 break
             }
-            
+
             // Parsed message header
-            
+
             let totalMessageSize = 5 + Int(header.length)
-            
+
             // Check if we have the complete message
             guard receiveBuffer.count >= totalMessageSize else {
                 break
             }
-            
+
             // Extract message payload
             let payload = receiveBuffer[5..<totalMessageSize]
-            
+
+            // Write parsed IPC message to debug file if debug is enabled
+            if debugOutputEnabled {
+                writeToDebugFile("Type: \(header.type), Length: \(header.length), Payload: \(String(data: payload, encoding: .utf8) ?? "binary")", source: "IPC_PARSED")
+            }
+
             // Process the message
             processMessage(header: header, payload: payload)
-            
+
             // Remove processed message from buffer
             receiveBuffer.removeFirst(totalMessageSize)
         }
@@ -347,5 +379,170 @@ class VibeTunnelSocketManager: ObservableObject {
             with: "",
             options: .regularExpression
         )
+    }
+
+    // MARK: - Debug File Management
+
+    private func createDebugFile(sessionId: String) {
+        debugQueue.async { [weak self] in
+            // Close any existing debug file
+            self?.debugFileHandle?.closeFile()
+            self?.debugFileHandle = nil
+
+            // Create filename with session name and timestamp
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyyMMdd_HHmmss"
+            let timestamp = formatter.string(from: Date())
+            let filename = "\(sessionId)_\(timestamp).txt"
+
+            // Get home directory and create file path
+            let homeDir = FileManager.default.homeDirectoryForCurrentUser
+            let filePath = homeDir.appendingPathComponent(filename)
+
+            // Create the file
+            FileManager.default.createFile(atPath: filePath.path, contents: nil, attributes: nil)
+
+            // Open file handle for writing
+            self?.debugFileHandle = try? FileHandle(forWritingTo: filePath)
+
+            // Write header
+            let header = """
+            ========================================
+            VibeTunnel Debug Log
+            Session: \(sessionId)
+            Started: \(Date())
+            ========================================
+
+            """
+            if let headerData = header.data(using: .utf8) {
+                self?.debugFileHandle?.write(headerData)
+            }
+
+            self?.logger.info("[DEBUG] Created debug file: \(filePath.path)")
+        }
+    }
+
+    private func writeToDebugFile(_ content: String, source: String) {
+        debugQueue.async { [weak self] in
+            guard let fileHandle = self?.debugFileHandle else { return }
+
+            // Clean the content before writing
+            let cleanedContent = self?.cleanDebugContent(content) ?? content
+
+            let timestamp = Date()
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm:ss.SSS"
+            let timeString = formatter.string(from: timestamp)
+
+            let entry = """
+
+            [\(timeString)] [\(source)]
+            ----------------------------------------
+            \(cleanedContent)
+            ========================================
+
+            """
+
+            if let data = entry.data(using: .utf8) {
+                fileHandle.write(data)
+            }
+        }
+    }
+
+    private func cleanDebugContent(_ text: String) -> String {
+        var cleaned = text
+
+        // First, handle JSON-escaped sequences
+        // Convert \u001b to actual escape character
+        cleaned = cleaned.replacingOccurrences(of: "\\u001b", with: "\u{001B}")
+        cleaned = cleaned.replacingOccurrences(of: "\\r", with: "\r")
+        cleaned = cleaned.replacingOccurrences(of: "\\n", with: "\n")
+        cleaned = cleaned.replacingOccurrences(of: "\\t", with: "\t")
+
+        // Now remove ANSI escape sequences (color codes, cursor movements, etc.)
+        // This matches ESC followed by [ and then any combination of numbers and semicolons, ending with a letter
+        let ansiPattern = "\u{001B}\\[[0-9;]*[a-zA-Z]"
+        cleaned = cleaned.replacingOccurrences(
+            of: ansiPattern,
+            with: "",
+            options: .regularExpression
+        )
+
+        // Remove other ANSI sequences
+        let additionalPatterns = [
+            "\u{001B}\\[\\?[0-9]+[hl]",     // DEC private mode (like ?2026h, ?2026l)
+            "\u{001B}\\[[0-9]+(;[0-9]+)*m", // SGR sequences (colors, bold, etc)
+            "\u{001B}\\].*;.*\u{0007}",     // OSC sequences
+            "\u{001B}[\\(\\)].",             // Character set selection
+            "\u{001B}.",                     // Any other ESC + single character
+            "\r",                             // Carriage returns
+        ]
+
+        for pattern in additionalPatterns {
+            cleaned = cleaned.replacingOccurrences(
+                of: pattern,
+                with: "",
+                options: .regularExpression
+            )
+        }
+
+        // Remove remaining control characters
+        let controlCharsPattern = "[\u{0000}-\u{0008}\u{000B}\u{000C}\u{000E}-\u{001F}\u{007F}]"
+        cleaned = cleaned.replacingOccurrences(
+            of: controlCharsPattern,
+            with: "",
+            options: .regularExpression
+        )
+
+        // Clean up the JSON array structure if present
+        // Match patterns like [0,"o","..."] and extract just the content
+        if cleaned.hasPrefix("[") && cleaned.hasSuffix("]") {
+            // Try to parse as JSON array and extract the string content
+            if let data = cleaned.data(using: .utf8),
+               let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [Any],
+               jsonArray.count >= 3,
+               let content = jsonArray[2] as? String {
+                cleaned = content
+
+                // Re-apply cleaning to the extracted content
+                return cleanDebugContent(cleaned)
+            }
+        }
+
+        // Clean up multiple consecutive newlines
+        let multipleNewlines = "\n{3,}"
+        cleaned = cleaned.replacingOccurrences(
+            of: multipleNewlines,
+            with: "\n\n",
+            options: .regularExpression
+        )
+
+        // Trim whitespace from each line
+        let lines = cleaned.components(separatedBy: .newlines)
+        let trimmedLines = lines.map { $0.trimmingCharacters(in: .whitespaces) }
+        cleaned = trimmedLines.joined(separator: "\n")
+
+        return cleaned
+    }
+
+    private func closeDebugFile() {
+        debugQueue.async { [weak self] in
+            // Write closing message
+            let footer = """
+
+            ========================================
+            Session ended: \(Date())
+            ========================================
+            """
+            if let footerData = footer.data(using: .utf8) {
+                self?.debugFileHandle?.write(footerData)
+            }
+
+            // Close file handle
+            self?.debugFileHandle?.closeFile()
+            self?.debugFileHandle = nil
+
+            self?.logger.info("[DEBUG] Closed debug file")
+        }
     }
 }
