@@ -96,7 +96,9 @@ class VibeTunnelSocketManager: ObservableObject {
         
         // Create Unix domain socket endpoint
         let endpoint = NWEndpoint.unix(path: socketPath)
-        let parameters = NWParameters()
+        
+        // Use .tcp parameters for Unix domain socket (this is correct in Network.framework)
+        let parameters = NWParameters.tcp
         
         connection = NWConnection(to: endpoint, using: parameters)
         
