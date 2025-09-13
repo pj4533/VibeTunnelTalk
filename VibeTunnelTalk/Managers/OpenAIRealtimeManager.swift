@@ -64,7 +64,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     func connect() {
         // Don't connect without an API key
         guard !apiKey.isEmpty else { 
-            logger.warning("Cannot connect to OpenAI without API key")
+            logger.warning("[OPENAI-CONNECTION] ⚠️ Cannot connect without API key")
             return 
         }
         
@@ -242,11 +242,11 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
             
             webSocketTask.send(message) { [weak self] error in
                 if let error = error {
-                    self?.logger.error("Failed to send event: \(error.localizedDescription)")
+                    self?.logger.error("[OPENAI-TX] ❌ Failed to send event: \(error.localizedDescription)")
                 }
             }
         } catch {
-            logger.error("Failed to serialize event: \(error.localizedDescription)")
+            logger.error("[OPENAI-TX] ❌ Failed to serialize event: \(error.localizedDescription)")
         }
     }
     
@@ -258,7 +258,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 self?.receiveMessage() // Continue receiving
                 
             case .failure(let error):
-                self?.logger.error("WebSocket receive error: \(error.localizedDescription)")
+                self?.logger.error("[OPENAI-RX] ❌ WebSocket receive error: \(error.localizedDescription)")
                 self?.handleDisconnection()
             }
         }
@@ -320,7 +320,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 
             case "response.function_call_arguments.delta":
                 // Handle function call arguments
-                logger.debug("Function call arguments delta received")
+                logger.debug("[OPENAI-MSG] Function call arguments delta received")
                 
             case "response.function_call_arguments.done":
                 // Function call complete
@@ -337,28 +337,28 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 
             case "input_audio_buffer.speech_started":
                 // User started speaking
-                logger.debug("Speech started")
+                logger.debug("[OPENAI-MSG] 🎤 Speech started")
                 
             case "input_audio_buffer.speech_stopped":
                 // User stopped speaking
-                logger.debug("Speech stopped")
+                logger.debug("[OPENAI-MSG] 🔇 Speech stopped")
                 
             case "conversation.item.created":
                 // New conversation item created
-                logger.debug("Conversation item created")
+                logger.debug("[OPENAI-MSG] Conversation item created")
                 
             case "error":
                 // Handle error
                 if let error = json["error"] as? [String: Any] {
-                    logger.error("OpenAI error: \(error)")
+                    logger.error("[OPENAI-MSG] 🚨 Error from OpenAI: \(error)")
                 }
                 
             default:
-                logger.debug("Received event type: \(type)")
+                logger.debug("[OPENAI-MSG] Received event type: \(type)")
             }
             
         } catch {
-            logger.error("Failed to parse message: \(error.localizedDescription)")
+            logger.error("[OPENAI-RX] ❌ Failed to parse message: \(error.localizedDescription)")
         }
     }
     
@@ -384,7 +384,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
                 self.audioPlayer = try AVAudioPlayer(data: wavData)
                 self.audioPlayer?.play()
             } catch {
-                self.logger.error("Failed to play audio: \(error.localizedDescription)")
+                self.logger.error("[OPENAI-AUDIO] ❌ Failed to play audio: \(error.localizedDescription)")
             }
             
             // Clear buffer
@@ -436,7 +436,7 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
         do {
             try audioEngine.start()
         } catch {
-            logger.error("Failed to start audio engine: \(error.localizedDescription)")
+            logger.error("[OPENAI-AUDIO] ❌ Failed to start audio engine: \(error.localizedDescription)")
         }
     }
     
@@ -482,11 +482,11 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
 
 extension OpenAIRealtimeManager: URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        logger.info("WebSocket connected to OpenAI")
+        logger.info("[OPENAI-CONNECTION] ✅ WebSocket connected")
     }
     
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        logger.info("WebSocket closed with code: \(String(describing: closeCode))")
+        logger.info("[OPENAI-CONNECTION] 🔌 WebSocket closed with code: \(String(describing: closeCode))")
         handleDisconnection()
     }
 }
