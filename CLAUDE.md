@@ -63,12 +63,26 @@ The application follows a modular architecture with clear separation of concerns
    - Maps voice intents to terminal commands
    - Located at: `VibeTunnelTalk/Managers/VoiceCommandProcessor.swift`
 
-### VibeTunnel IPC Protocol
+### VibeTunnel Integration
 
-The app communicates with VibeTunnel sessions using a binary protocol:
+**VibeTunnel Source Code Location**: `~/Developer/vibetunnel`
+
+The app communicates with VibeTunnel sessions using two mechanisms:
+
+#### 1. IPC Socket (Control Commands)
 - Socket path: `~/.vibetunnel/control/{session-id}/ipc.sock`
-- Message format: 8-byte header + payload
-- Message types: input (0x01), data (0x02), resize (0x03), etc.
+- Message format: 5-byte header (1 byte type + 4 bytes length) + payload
+- Message types:
+  - STDIN_DATA (0x01): Send keyboard input to terminal
+  - CONTROL_CMD (0x02): Control commands (resize, kill, etc)
+  - STATUS_UPDATE (0x03): Status updates (Claude activity, etc)
+  - HEARTBEAT (0x04): Keep-alive ping/pong
+  - ERROR (0x05): Error messages
+
+#### 2. SSE Stream (Terminal Output)
+- Endpoint: `http://localhost:5174/api/sessions/{session-id}/stream`
+- Protocol: Server-Sent Events (SSE)
+- Receives real-time terminal output from VibeTunnel
 
 ### Key Dependencies
 

@@ -14,6 +14,10 @@ class VibeTunnelSocketManager: ObservableObject {
     private var receiveBuffer = Data()
     private let queue = DispatchQueue(label: "vibetunnel.socket", qos: .userInitiated)
     
+    // SSE client for terminal output streaming
+    private var sseClient: VibeTunnelSSEClient?
+    private var sseSubscription: AnyCancellable?
+    
     /// Find available VibeTunnel sessions
     func findAvailableSessions() -> [String] {
         // Now that we're not sandboxed, this returns the real home directory
@@ -108,13 +112,47 @@ class VibeTunnelSocketManager: ObservableObject {
         
         connection?.start(queue: queue)
         currentSessionId = sessionId
+        
+        // Also start SSE client for terminal output
+        startSSEClient(sessionId: sessionId)
+    }
+    
+    private func startSSEClient(sessionId: String) {
+        logger.info("[VIBETUNNEL-SSE] 🌊 Starting SSE client for terminal output")
+        
+        // Create and configure SSE client
+        sseClient = VibeTunnelSSEClient()
+        
+        // Subscribe to terminal output from SSE
+        sseSubscription = sseClient?.terminalOutput
+            .sink { [weak self] output in
+                self?.logger.debug("[VIBETUNNEL-SSE] 📺 Received terminal output via SSE: \(output.count) chars")
+                
+                // Remove ANSI escape codes for cleaner processing
+                let cleanText = self?.removeANSIEscapeCodes(from: output) ?? output
+                
+                // Forward to our terminal output subject
+                self?.terminalOutput.send(cleanText)
+            }
+        
+        // Connect to SSE stream
+        sseClient?.connect(sessionId: sessionId)
     }
     
     /// Disconnect from current session
     func disconnect() {
         logger.info("[VIBETUNNEL-SOCKET] 🔌 Disconnecting from session")
+        
+        // Stop IPC socket connection
         connection?.cancel()
         connection = nil
+        
+        // Stop SSE client
+        sseClient?.disconnect()
+        sseClient = nil
+        sseSubscription?.cancel()
+        sseSubscription = nil
+        
         isConnected = false
         currentSessionId = nil
     }
@@ -126,7 +164,7 @@ class VibeTunnelSocketManager: ObservableObject {
             return
         }
         
-        let message = IPCMessage.createInput(text)
+        let message = IPCMessage.createStdinData(text)
         let messageSize = message.data.count
         
         logger.info("[VIBETUNNEL-TX] 📤 Sending input:")
@@ -141,6 +179,26 @@ class VibeTunnelSocketManager: ObservableObject {
                 self?.logger.info("[VIBETUNNEL-TX] ✅ Successfully sent \(messageSize) bytes")
             }
         })
+    }
+    
+    /// Request terminal to refresh/resend current buffer content
+    func requestRefresh() {
+        guard isConnected else {
+            logger.warning("[VIBETUNNEL-SOCKET] ⚠️ Cannot request refresh - not connected")
+            return
+        }
+        
+        logger.info("[VIBETUNNEL-REFRESH] 🔄 Requesting terminal refresh")
+        
+        // Send a harmless control sequence that should trigger output
+        // Ctrl+L is commonly used to refresh/redraw terminal
+        let refreshCommand = "\u{000C}"  // Form feed (Ctrl+L)
+        sendInput(refreshCommand)
+        
+        // Also send a resize to current size to trigger redraw
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.resize(cols: 80, rows: 24)
+        }
     }
     
     /// Resize terminal
@@ -181,6 +239,13 @@ class VibeTunnelSocketManager: ObservableObject {
             }
             startReceiving()
             
+            // Send initial resize to trigger terminal output
+            // Standard terminal size of 80x24 - this will cause VibeTunnel to send current buffer
+            logger.info("[VIBETUNNEL-INIT] 📐 Sending initial resize to trigger terminal output")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.resize(cols: 80, rows: 24)
+            }
+            
         case .failed(let error):
             logger.error("[VIBETUNNEL-STATE] ❌ Connection failed: \(error.localizedDescription)")
             DispatchQueue.main.async {
@@ -210,25 +275,46 @@ class VibeTunnelSocketManager: ObservableObject {
     
     private func startReceiving() {
         logger.info("[VIBETUNNEL-RX] 👂 Starting to listen for data...")
+        logger.info("[VIBETUNNEL-RX] 🔌 Connection state: \(String(describing: self.connection?.state))")
         
-        connection?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+        connection?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, context, isComplete, error in
+            // Log receive call details
+            self?.logger.debug("[VIBETUNNEL-RX] 📡 Receive callback triggered")
+            
             if let data = data, !data.isEmpty {
                 self?.logger.info("[VIBETUNNEL-RX] 📥 Received \(data.count) bytes")
+                
+                // Log first 100 bytes as hex for debugging
+                let hexBytes = data.prefix(100).map { String(format: "%02x", $0) }.joined(separator: " ")
+                self?.logger.debug("[VIBETUNNEL-RX]    Raw data (first 100 bytes): \(hexBytes)")
+                
+                // Also try to decode as string for quick preview
+                if let preview = String(data: data.prefix(100), encoding: .utf8) {
+                    self?.logger.debug("[VIBETUNNEL-RX]    String preview: \"\(preview.replacingOccurrences(of: "\n", with: "\\n"))\"")
+                }
+                
                 self?.handleReceivedData(data)
             } else if data?.isEmpty == true {
                 self?.logger.warning("[VIBETUNNEL-RX] ⚠️ Received empty data")
+            } else if data == nil {
+                self?.logger.warning("[VIBETUNNEL-RX] ⚠️ Received nil data (no data available)")
             }
             
             if let error = error {
                 self?.logger.error("[VIBETUNNEL-RX] ❌ Receive error: \(error.localizedDescription)")
+                self?.logger.error("[VIBETUNNEL-RX]    Error domain: \(error._domain), code: \(error._code)")
             }
             
             if isComplete {
-                self?.logger.warning("[VIBETUNNEL-RX] ⚠️ Connection marked as complete")
+                self?.logger.warning("[VIBETUNNEL-RX] ⚠️ Connection marked as complete - remote side closed")
             }
             
+            // Continue receiving if no error and connection not complete
             if error == nil && !isComplete {
+                self?.logger.debug("[VIBETUNNEL-RX] 🔄 Scheduling next receive...")
                 self?.startReceiving()
+            } else {
+                self?.logger.warning("[VIBETUNNEL-RX] 🛑 Stopping receive loop (error: \(error != nil), complete: \(isComplete))")
             }
         }
     }
@@ -257,10 +343,9 @@ class VibeTunnelSocketManager: ObservableObject {
             
             logger.info("[VIBETUNNEL-RX] 📨 Parsed message header:")
             logger.info("[VIBETUNNEL-RX]    - Type: \(String(describing: header.type)) (0x\(String(format: "%02x", header.type.rawValue)))")
-            logger.info("[VIBETUNNEL-RX]    - Flags: 0x\(String(format: "%02x", header.flags))")
             logger.info("[VIBETUNNEL-RX]    - Payload length: \(header.length) bytes")
             
-            let totalMessageSize = 8 + Int(header.length)
+            let totalMessageSize = 5 + Int(header.length)
             
             // Check if we have the complete message
             guard receiveBuffer.count >= totalMessageSize else {
@@ -269,7 +354,7 @@ class VibeTunnelSocketManager: ObservableObject {
             }
             
             // Extract message payload
-            let payload = receiveBuffer[8..<totalMessageSize]
+            let payload = receiveBuffer[5..<totalMessageSize]
             
             // Process the message
             processMessage(header: header, payload: payload)
@@ -289,57 +374,39 @@ class VibeTunnelSocketManager: ObservableObject {
         logger.info("[VIBETUNNEL-MSG] 🎯 Processing message type: \(String(describing: header.type))")
         
         switch header.type {
-        case .data:
-            // Terminal output data
-            logger.info("[VIBETUNNEL-MSG] 📺 Received terminal output: \(payload.count) bytes")
+        case .statusUpdate:
+            // Status update (Claude activity, etc.)
+            logger.info("[VIBETUNNEL-MSG] 📊 Received status update: \(payload.count) bytes")
             
-            if let text = String(data: payload, encoding: .utf8) {
-                // Log first 200 chars of terminal output
-                let preview = String(text.prefix(200)).replacingOccurrences(of: "\n", with: "\\n")
-                logger.info("[VIBETUNNEL-MSG]    Terminal text preview: \"\(preview)\(text.count > 200 ? "..." : "")\"")
-                
-                // Remove ANSI escape codes for cleaner processing
-                let cleanText = removeANSIEscapeCodes(from: text)
-                logger.debug("[VIBETUNNEL-MSG]    Clean text length: \(cleanText.count) chars")
-                
-                DispatchQueue.main.async {
-                    self.terminalOutput.send(cleanText)
-                }
-                logger.info("[VIBETUNNEL-MSG] ✅ Terminal output sent to subscribers")
+            if let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+               let app = json["app"] as? String,
+               let status = json["status"] as? String {
+                logger.info("[VIBETUNNEL-MSG]    App: \(app), Status: \(status)")
+                // TODO: Handle status updates and forward to activity monitor
             } else {
-                logger.warning("[VIBETUNNEL-MSG] ⚠️ Could not decode terminal data as UTF-8")
+                logger.warning("[VIBETUNNEL-MSG] ⚠️ Could not decode status update")
             }
             
         case .error:
             logger.error("[VIBETUNNEL-MSG] 🚨 Received ERROR message")
-            if let errorText = String(data: payload, encoding: .utf8) {
-                logger.error("[VIBETUNNEL-MSG]    Error content: \(errorText)")
+            if let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+               let code = json["code"] as? String,
+               let message = json["message"] as? String {
+                logger.error("[VIBETUNNEL-MSG]    Error code: \(code), message: \(message)")
             } else {
                 logger.error("[VIBETUNNEL-MSG]    Could not decode error message")
             }
             
         case .heartbeat:
-            // Respond to heartbeat
+            // Echo heartbeat back
             logger.info("[VIBETUNNEL-MSG] 💓 Received heartbeat")
             sendHeartbeat()
             
-        case .updateTitle:
-            logger.info("[VIBETUNNEL-MSG] 🏷️ Received title update")
-            if let titleText = String(data: payload, encoding: .utf8) {
-                logger.info("[VIBETUNNEL-MSG]    New title: \(titleText)")
-            }
+        case .stdinData:
+            logger.info("[VIBETUNNEL-MSG] ⌨️ Received STDIN_DATA message (unexpected - we send these, not receive)")
             
-        case .kill:
-            logger.warning("[VIBETUNNEL-MSG] ☠️ Received KILL message")
-            
-        case .resetSize:
-            logger.info("[VIBETUNNEL-MSG] 📐 Received reset size message")
-            
-        case .input:
-            logger.info("[VIBETUNNEL-MSG] ⌨️ Received INPUT message (unexpected)")
-            
-        case .resize:
-            logger.info("[VIBETUNNEL-MSG] 📏 Received RESIZE message (unexpected)")
+        case .controlCmd:
+            logger.info("[VIBETUNNEL-MSG] 🎮 Received CONTROL_CMD message (unexpected - we send these, not receive)")
             
         @unknown default:
             logger.warning("[VIBETUNNEL-MSG] ❓ Received unknown message type: 0x\(String(format: "%02x", header.type.rawValue))")

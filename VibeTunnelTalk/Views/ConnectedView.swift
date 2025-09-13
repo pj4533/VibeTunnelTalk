@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import OSLog
 
 struct ConnectedView: View {
     @ObservedObject var socketManager: VibeTunnelSocketManager
@@ -9,6 +10,8 @@ struct ConnectedView: View {
     @State private var isExpanded = true
     @State private var terminalOutput = ""
     @State private var showTerminal = false
+    
+    private let logger = AppLogger.ui
     
     var body: some View {
         VStack(spacing: 0) {
@@ -59,6 +62,11 @@ struct ConnectedView: View {
                     )
                 }
                 
+                Button(action: { socketManager.requestRefresh() }) {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .help("Request terminal to resend current buffer")
+                
                 Spacer()
                 
                 Button("Disconnect") {
@@ -69,12 +77,21 @@ struct ConnectedView: View {
             .padding()
         }
         .onReceive(socketManager.terminalOutput) { output in
+            logger.info("[CONNECTED-VIEW] 📨 Received terminal output: \(output.count) characters")
+            logger.debug("[CONNECTED-VIEW]    Preview: \"\(output.prefix(100))\"")
+            
             terminalOutput += output
             // Keep last 1000 lines
             let lines = terminalOutput.components(separatedBy: .newlines)
             if lines.count > 1000 {
                 terminalOutput = lines.suffix(1000).joined(separator: "\n")
             }
+            
+            logger.info("[CONNECTED-VIEW] 📊 Total terminal buffer: \(terminalOutput.count) characters")
+        }
+        .onAppear {
+            logger.info("[CONNECTED-VIEW] 🎯 View appeared - connected to session: \(socketManager.currentSessionId ?? "unknown")")
+            logger.info("[CONNECTED-VIEW] 📡 Socket connected: \(socketManager.isConnected)")
         }
     }
     

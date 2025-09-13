@@ -1,42 +1,34 @@
 import Foundation
 
-/// VibeTunnel IPC Message Types
+/// VibeTunnel IPC Message Types (matching socket-protocol.ts)
 enum MessageType: UInt8 {
-    case input = 0x01
-    case data = 0x02
-    case resize = 0x03
-    case kill = 0x04
-    case resetSize = 0x05
-    case updateTitle = 0x06
-    case heartbeat = 0x07
-    case error = 0xFF
+    case stdinData = 0x01      // Raw stdin data (keyboard input)
+    case controlCmd = 0x02     // Control commands (resize, kill, etc)
+    case statusUpdate = 0x03   // Status updates (Claude status, etc)
+    case heartbeat = 0x04      // Keep-alive ping/pong
+    case error = 0x05          // Error messages
 }
 
-/// Message header structure (8 bytes)
+/// Message header structure (5 bytes)
+/// Format: [1 byte: type] [4 bytes: length (big-endian)]
 struct MessageHeader {
     let type: MessageType
-    let flags: UInt8
-    let reserved: UInt16
     let length: UInt32
     
     var data: Data {
         var data = Data()
         data.append(type.rawValue)
-        data.append(flags)
-        data.append(contentsOf: withUnsafeBytes(of: reserved.bigEndian) { Data($0) })
         data.append(contentsOf: withUnsafeBytes(of: length.bigEndian) { Data($0) })
         return data
     }
     
     static func parse(from data: Data) -> MessageHeader? {
-        guard data.count >= 8 else { return nil }
+        guard data.count >= 5 else { return nil }
         
         let type = MessageType(rawValue: data[0]) ?? .error
-        let flags = data[1]
-        let reserved = data[2..<4].withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }
-        let length = data[4..<8].withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        let length = data[1..<5].withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
         
-        return MessageHeader(type: type, flags: flags, reserved: reserved, length: length)
+        return MessageHeader(type: type, length: length)
     }
 }
 
@@ -51,24 +43,20 @@ struct IPCMessage {
         return result
     }
     
-    static func createInput(_ text: String) -> IPCMessage {
+    static func createStdinData(_ text: String) -> IPCMessage {
         let payload = text.data(using: .utf8) ?? Data()
         let header = MessageHeader(
-            type: .input,
-            flags: 0,
-            reserved: 0,
+            type: .stdinData,
             length: UInt32(payload.count)
         )
         return IPCMessage(header: header, payload: payload)
     }
     
     static func createResize(cols: Int, rows: Int) -> IPCMessage {
-        let json = ["cols": cols, "rows": rows]
+        let json = ["cmd": "resize", "cols": cols, "rows": rows] as [String: Any]
         let payload = try! JSONSerialization.data(withJSONObject: json)
         let header = MessageHeader(
-            type: .resize,
-            flags: 0,
-            reserved: 0,
+            type: .controlCmd,
             length: UInt32(payload.count)
         )
         return IPCMessage(header: header, payload: payload)
@@ -77,10 +65,18 @@ struct IPCMessage {
     static func createHeartbeat() -> IPCMessage {
         let header = MessageHeader(
             type: .heartbeat,
-            flags: 0,
-            reserved: 0,
             length: 0
         )
         return IPCMessage(header: header, payload: Data())
+    }
+    
+    static func createStatusUpdate(app: String, status: String) -> IPCMessage {
+        let json = ["app": app, "status": status] as [String: Any]
+        let payload = try! JSONSerialization.data(withJSONObject: json)
+        let header = MessageHeader(
+            type: .statusUpdate,
+            length: UInt32(payload.count)
+        )
+        return IPCMessage(header: header, payload: payload)
     }
 }
