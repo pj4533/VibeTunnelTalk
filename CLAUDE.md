@@ -40,35 +40,41 @@ open VibeTunnelTalk.xcodeproj
 
 ## Architecture
 
-The application follows a modular architecture with clear separation of concerns.
+The application follows a simplified polling-based architecture that leverages VibeTunnel's server-side terminal processing capabilities.
 
 ### Data Flow Architecture
 
 **Important**: For a comprehensive understanding of how data flows through the application, refer to `docs/Data_Flow_Architecture.md`. This document explains:
-- How VibeTunnelTalk connects to and monitors Claude Code sessions
-- The virtual terminal buffer system that mirrors Claude's terminal state
+- How VibeTunnelTalk polls and processes terminal buffer snapshots
+- The simplified architecture without ANSI parsing or SSE streaming
 - The intelligent change detection and filtering pipeline
 - The bidirectional voice communication flow
-- The complete data flow from terminal output to voice narration and back
+- The complete data flow from buffer snapshot to voice narration and back
 
 ### Core Components
 
 1. **VibeTunnelSocketManager**: Manages Unix domain socket connections to VibeTunnel sessions
-   - Implements the VibeTunnel IPC protocol for message framing
-   - Handles terminal input/output via socket communication
+   - Implements the VibeTunnel IPC protocol for sending commands
+   - Coordinates the buffer polling service lifecycle
    - Located at: `VibeTunnelTalk/Managers/VibeTunnelSocketManager.swift`
 
-2. **OpenAIRealtimeManager**: Manages WebSocket connection to OpenAI's Realtime API
+2. **VibeTunnelBufferService**: Polls VibeTunnel's buffer API for terminal snapshots
+   - Fetches complete terminal state every 500ms
+   - Decodes both JSON and binary buffer formats
+   - Located at: `VibeTunnelTalk/Services/VibeTunnelBufferService.swift`
+
+3. **SmartTerminalProcessor**: Processes buffer snapshots for intelligent narration
+   - Extracts plain text from buffer cell grid
+   - Detects meaningful changes between snapshots
+   - Manages communication with OpenAI
+   - Located at: `VibeTunnelTalk/Managers/SmartTerminalProcessor.swift`
+
+4. **OpenAIRealtimeManager**: Manages WebSocket connection to OpenAI's Realtime API
    - Handles audio streaming in PCM16 format
    - Manages voice activity detection and TTS output
    - Located at: `VibeTunnelTalk/Managers/OpenAIRealtimeManager.swift`
 
-3. **SessionActivityMonitor**: Analyzes terminal output for intelligent narration
-   - Detects Claude activity states (thinking, writing, debugging, etc.)
-   - Generates contextual summaries for voice narration
-   - Located at: `VibeTunnelTalk/Managers/SessionActivityMonitor.swift`
-
-4. **VoiceCommandProcessor**: Processes voice commands into terminal actions
+5. **VoiceCommandProcessor**: Processes voice commands into terminal actions
    - Maps voice intents to terminal commands
    - Located at: `VibeTunnelTalk/Managers/VoiceCommandProcessor.swift`
 
@@ -90,10 +96,11 @@ The app communicates with VibeTunnel sessions using two mechanisms:
   - HEARTBEAT (0x04): Keep-alive ping/pong
   - ERROR (0x05): Error messages
 
-#### 2. SSE Stream (Terminal Output)
-- Endpoint: `http://localhost:4020/api/sessions/{session-id}/stream`
-- Protocol: Server-Sent Events (SSE)
-- Receives real-time terminal output from VibeTunnel
+#### 2. Buffer API (Terminal State)
+- Endpoint: `http://localhost:4020/api/sessions/{session-id}/buffer`
+- Protocol: HTTP polling (every 500ms)
+- Response: Complete terminal buffer snapshot with cell-level detail
+- Format: JSON or binary, containing 2D grid of terminal cells with text and formatting
 
 ### Key Dependencies
 
@@ -114,7 +121,7 @@ A comprehensive implementation guide is available in `docs/VibeTunnelTalk_Implem
 ## Key Implementation Notes
 
 1. **Entitlements**: The app requires specific sandbox permissions for:
-   - Network client access (OpenAI API)
+   - Network client access (OpenAI API and VibeTunnel buffer API)
    - Audio input (microphone)
    - File access to `~/.vibetunnel/` directory
 
@@ -122,9 +129,11 @@ A comprehensive implementation guide is available in `docs/VibeTunnelTalk_Implem
 
 3. **Audio Format**: OpenAI Realtime API expects 24kHz PCM16 mono audio
 
-4. **Activity Detection**: The app uses pattern matching to detect Claude's activities and generate appropriate narrations
+4. **Buffer Polling**: The app polls VibeTunnel's buffer API every 500ms for terminal snapshots
 
-5. **Error Handling**: Implement reconnection logic for both socket and WebSocket connections
+5. **No ANSI Parsing**: VibeTunnel handles all terminal emulation and ANSI escape sequence parsing server-side
+
+6. **Error Handling**: Implement reconnection logic for IPC socket, HTTP polling, and WebSocket connections
 
 ## Reference Implementation
 

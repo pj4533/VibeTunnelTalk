@@ -13,9 +13,8 @@ class VibeTunnelSocketManager: ObservableObject {
     var receiveBuffer = Data()
     let queue = DispatchQueue(label: "vibetunnel.socket", qos: .userInitiated)
 
-    // SSE client for terminal output streaming
-    private var sseClient: VibeTunnelSSEClient?
-    private var sseSubscription: AnyCancellable?
+    // Buffer service for fetching terminal snapshots
+    private var bufferService: VibeTunnelBufferService?
 
     // Smart terminal processor for intelligent data filtering
     private var terminalProcessor: SmartTerminalProcessor?
@@ -69,8 +68,8 @@ class VibeTunnelSocketManager: ObservableObject {
         // Start connection
         connection?.start(queue: queue)
 
-        // Also start SSE client for terminal output
-        startSSEClient(sessionId: sessionId)
+        // Start buffer service for terminal snapshots
+        startBufferService(sessionId: sessionId)
 
         // Enable debug output if configured
         if debugOutputEnabled {
@@ -91,8 +90,8 @@ class VibeTunnelSocketManager: ObservableObject {
         connection = nil
         receiveBuffer.removeAll()
 
-        // Stop SSE client
-        stopSSEClient()
+        // Stop buffer service
+        stopBufferService()
 
         // Clean up smart processor
         terminalProcessor?.cleanup()
@@ -167,64 +166,30 @@ class VibeTunnelSocketManager: ObservableObject {
         })
     }
 
-    // MARK: - SSE Client Management
+    // MARK: - Buffer Service Management
 
-    private func startSSEClient(sessionId: String) {
-        // Create SSE client for streaming terminal output
-        sseClient = VibeTunnelSSEClient()
+    private func startBufferService(sessionId: String) {
+        // Create buffer service for fetching terminal snapshots
+        bufferService = VibeTunnelBufferService()
 
-        // If we have a smart processor, let it handle the SSE events directly
-        if let terminalProcessor = terminalProcessor, let sseClient = sseClient {
-            // Start the processor with the SSE client (this sets up the subscription internally)
-            terminalProcessor.startProcessing(sseClient: sseClient)
-        } else {
-            // Fallback: Subscribe to asciinema events manually
-            sseSubscription = sseClient?.asciinemaEvent.sink { [weak self] event in
-                self?.handleSSEEvent(event)
-            }
+        // If we have a smart processor, let it handle the buffer snapshots
+        if let terminalProcessor = terminalProcessor, let bufferService = bufferService {
+            terminalProcessor.startProcessing(bufferService: bufferService, sessionId: sessionId)
         }
 
-        sseClient?.connect(sessionId: sessionId)
-        logger.info("[VIBETUNNEL-SSE] Started SSE client for session: \(sessionId)")
+        // Start polling for buffer updates
+        bufferService?.startPolling(sessionId: sessionId, interval: 0.5)
+        logger.info("[VIBETUNNEL-BUFFER] Started buffer service for session: \(sessionId)")
     }
 
-    private func stopSSEClient() {
+    private func stopBufferService() {
         // Stop the smart processor if it's running
         terminalProcessor?.stopProcessing()
 
-        // Cancel manual subscription if we have one
-        sseSubscription?.cancel()
-        sseSubscription = nil
-
-        // Disconnect SSE client
-        sseClient?.disconnect()
-        sseClient = nil
-        logger.info("[VIBETUNNEL-SSE] Stopped SSE client")
-    }
-
-    private func handleSSEEvent(_ event: AsciinemaEvent) {
-        // Process terminal output through smart processor
-        if let terminalProcessor = terminalProcessor {
-            // Create JSON array format for processor
-            let jsonArray = [event.timestamp, event.type.rawValue, event.data] as [Any]
-            if let jsonData = try? JSONSerialization.data(withJSONObject: jsonArray),
-               let jsonString = String(data: jsonData, encoding: .utf8) {
-                terminalProcessor.processTerminalEvent(jsonString)
-            }
-        }
-    }
-
-    private func cleanTerminalData(_ data: String) -> String? {
-        // Parse the JSON array format [timestamp, "o", content]
-        guard let jsonData = data.data(using: .utf8),
-              let array = try? JSONSerialization.jsonObject(with: jsonData) as? [Any],
-              array.count >= 3,
-              let content = array[2] as? String else {
-            return nil
-        }
-
-        // Remove ANSI escape codes for cleaner output
-        return removeANSIEscapeCodes(from: content)
+        // Stop buffer polling
+        bufferService?.stopPolling()
+        bufferService = nil
+        logger.info("[VIBETUNNEL-BUFFER] Stopped buffer service")
     }
 }
 

@@ -2,186 +2,195 @@
 
 ## Overview
 
-VibeTunnelTalk is a macOS application that provides real-time voice narration and control for Claude Code sessions. It acts as an intelligent voice interface layer between you and Claude, monitoring what Claude is doing in the terminal and allowing you to control Claude through voice commands.
+VibeTunnelTalk creates a voice interface for Claude Code sessions by monitoring terminal output and enabling voice control. The application uses a simplified polling-based architecture that leverages VibeTunnel's server-side terminal processing capabilities.
 
-## Core Concept
+## Architecture Components
 
-The application doesn't create or manage its own terminal. Instead, it creates a "mirror" of an existing Claude Code terminal session running through VibeTunnel. By reconstructing and monitoring what's happening in Claude's terminal, the app can provide intelligent voice narration about Claude's activities and accept voice commands to control Claude.
+### 1. Terminal Buffer Polling
 
-## Data Flow Architecture
+VibeTunnelTalk connects to VibeTunnel sessions through two primary mechanisms:
 
-### 1. Connection Establishment
+#### IPC Socket (Control Channel)
+- **Path**: `~/.vibetunnel/control/{session-id}/ipc.sock`
+- **Purpose**: Sends keyboard input and control commands to the terminal
+- **Protocol**: Binary message format with 5-byte header
+- **Direction**: VibeTunnelTalk → VibeTunnel
 
-When VibeTunnelTalk connects to a VibeTunnel session, it establishes two separate communication channels:
+#### Buffer API (Data Channel)
+- **Endpoint**: `http://localhost:4020/api/sessions/{session-id}/buffer`
+- **Purpose**: Fetches complete terminal state as structured data
+- **Protocol**: HTTP polling with JSON/Binary response
+- **Polling Rate**: Every 0.5 seconds
+- **Direction**: VibeTunnel → VibeTunnelTalk
 
-#### IPC Socket Connection
-- **Purpose**: Sends control commands TO the terminal where Claude is running
-- **Location**: Unix domain socket at `~/.vibetunnel/control/{session-id}/ipc.sock`
-- **Direction**: VibeTunnelTalk → VibeTunnel → Claude's terminal
-- **Functions**:
-  - Sending keyboard input (simulating typing)
-  - Terminal control commands (resize, refresh)
-  - Session management commands
+### 2. Buffer Snapshot Structure
 
-#### SSE Stream Connection
-- **Purpose**: Receives real-time terminal output FROM Claude Code
-- **Location**: HTTP Server-Sent Events stream at `http://localhost:4020/api/sessions/{session-id}/stream`
-- **Direction**: Claude's terminal → VibeTunnel → VibeTunnelTalk
-- **Functions**:
-  - Streaming terminal output as it happens
-  - Terminal resize events
-  - Session status updates
+VibeTunnel provides a complete terminal snapshot that includes:
 
-### 2. Virtual Terminal Buffer System
+```swift
+struct BufferSnapshot {
+    let cols: Int           // Terminal width in columns
+    let rows: Int           // Terminal height in rows
+    let viewportY: Int      // Current scroll position
+    let cursorX: Int        // Cursor X position
+    let cursorY: Int        // Cursor Y position
+    let cells: [[BufferCell]] // 2D grid of terminal cells
+}
 
-The heart of the data processing is the Virtual Terminal Buffer, which maintains a real-time representation of what's being displayed in Claude's terminal.
+struct BufferCell {
+    let char: String        // The actual character
+    let width: Int          // Character width (1 or 2 for wide chars)
+    let fg: Int?           // Foreground color (ANSI palette index)
+    let bg: Int?           // Background color (ANSI palette index)
+    let attributes: Int?    // Text attributes (bold, italic, etc.)
+}
+```
 
-#### Buffer Characteristics
-- **Structure**: A 2D grid of characters, exactly like a real terminal screen
-- **Dimensions**: Typically 120 columns × 40 rows (adjustable based on actual terminal size)
-- **Content**: Each cell contains a character plus its visual attributes (colors, bold, etc.)
+This snapshot represents the **exact text content** displayed in Claude's terminal, with all formatting preserved. VibeTunnel handles all the complex ANSI escape sequence parsing, terminal emulation, and buffer management on the server side.
+
+### 3. Smart Terminal Processing
+
+The Smart Terminal Processor is the brain of the narration system, converting raw buffer snapshots into intelligent voice narration.
 
 #### Processing Pipeline
-When data arrives from the SSE stream:
-1. **ANSI Processing**: The raw terminal output contains ANSI escape codes for formatting and cursor control
-2. **Buffer Updates**: These codes are interpreted to update the virtual buffer correctly
-3. **State Tracking**: The buffer maintains cursor position, colors, and screen content
-4. **Screen Operations**: Handles scrolling, clearing, and other terminal operations
 
-This virtual buffer essentially reconstructs what Claude is "seeing" on screen at any given moment, allowing the app to understand the context of Claude's activities.
+1. **Buffer Reception**
+   - `VibeTunnelBufferService` polls the buffer endpoint every 500ms
+   - Receives complete `BufferSnapshot` with current terminal state
+   - No need for ANSI parsing or terminal emulation
 
-### 3. Intelligent Change Detection
+2. **Text Extraction**
+   - Processor extracts plain text from the 2D cell grid
+   - Preserves logical structure (lines, indentation)
+   - Trims unnecessary whitespace while maintaining formatting
 
-The Smart Terminal Processor continuously monitors the virtual buffer to detect meaningful changes.
+3. **Change Detection**
+   - Compares current buffer content with previously sent content
+   - Calculates character-level differences
+   - Only processes changes exceeding minimum threshold (5 characters)
 
-#### Sampling Strategy
-- **Frequency**: Samples the buffer every second for responsive narration
-- **Comparison**: Compares current buffer state with previously sent state
-- **Diff Creation**: Generates a "diff" containing only what has changed
+4. **Intelligent Filtering**
+   - Skips updates when OpenAI is currently speaking
+   - Accumulates changes during speech for later processing
+   - Prevents overwhelming the voice interface with rapid changes
 
-#### Filtering Logic
-The processor applies intelligent filtering to focus on meaningful content:
-- **Noise Reduction**: Filters out terminal UI chrome (borders, status bars)
-- **Change Threshold**: Only processes changes above a minimum threshold
-- **Content Focus**: Prioritizes actual output over formatting changes
-- **Activity Detection**: Recognizes patterns indicating Claude's current activity
-
-#### Optimization Benefits
-- **Data Reduction**: Typically achieves 80-90% reduction in data sent to OpenAI
-- **Context Preservation**: Maintains understanding of what's happening without overwhelming detail
-- **Responsiveness**: Balances between immediate updates and avoiding information overload
+#### Data Reduction
+The processor achieves significant data reduction:
+- Only sends meaningful changes, not every buffer update
+- Filters out UI chrome and redundant updates
+- Typically achieves 80-90% reduction in data sent to OpenAI
 
 ### 4. Voice Narration Pipeline
 
 Once significant changes are detected, they flow through the voice narration system.
 
 #### OpenAI Integration
-The processed terminal updates are sent to OpenAI's Realtime API, which:
-1. **Context Understanding**: Analyzes the terminal changes to understand what Claude is doing
-2. **Activity Recognition**: Identifies whether Claude is thinking, writing code, debugging, etc.
-3. **Narrative Generation**: Creates appropriate voice narration based on the activity
-4. **Speech Synthesis**: Converts the narration to natural-sounding speech
+The processed terminal updates are sent to OpenAI's Realtime API:
+
+1. **Context Formatting**: Terminal content is wrapped with context markers
+2. **Intelligent Analysis**: OpenAI analyzes what Claude is doing
+3. **Narrative Generation**: Creates appropriate voice narration
+4. **Speech Synthesis**: Converts narration to natural speech
 
 #### Narration Characteristics
-- **Contextual Awareness**: Narration adapts based on what Claude is doing
-- **Conciseness**: Provides useful information without overwhelming detail
-- **Timing**: Narrates at appropriate moments without interrupting workflow
-- **Intelligence**: Understands the difference between important events and routine output
+- **Activity Awareness**: Recognizes when Claude is thinking, coding, debugging
+- **Contextual Relevance**: Focuses on important changes, ignores noise
+- **Natural Pacing**: Narrates at appropriate moments without interrupting
+- **Concise Summaries**: Provides useful information without overwhelming detail
 
 ### 5. Voice Command Processing
 
-The reverse flow allows you to control Claude through voice commands.
+The reverse flow enables voice control of Claude through natural speech.
 
-#### Audio Capture
-- **Source**: Mac's microphone captures your voice
-- **Format**: Audio is captured as 24kHz PCM16 mono
-- **Streaming**: Audio streams continuously to OpenAI while you're speaking
-
-#### Command Interpretation
-OpenAI's Realtime API processes your voice:
-1. **Speech Recognition**: Converts speech to text
-2. **Intent Understanding**: Determines what you want Claude to do
-3. **Command Generation**: Creates appropriate terminal commands
-4. **Response Generation**: Provides voice feedback about the action
+#### Audio Pipeline
+1. **Capture**: Mac's microphone captures voice at 24kHz PCM16 mono
+2. **Streaming**: Audio streams continuously to OpenAI while speaking
+3. **Recognition**: OpenAI converts speech to text in real-time
+4. **Intent Analysis**: Determines what action the user wants
 
 #### Command Execution
-Commands flow back through the IPC socket:
-1. **Command Formatting**: Converts intent to actual terminal input
-2. **Socket Transmission**: Sends through the IPC socket to VibeTunnel
-3. **Terminal Injection**: VibeTunnel injects the input into Claude's terminal
-4. **Execution**: Claude receives and responds to the command
+1. **Command Generation**: OpenAI creates appropriate terminal commands
+2. **IPC Transmission**: Commands sent through Unix domain socket
+3. **Terminal Injection**: VibeTunnel injects input into Claude's terminal
+4. **Response Monitoring**: Buffer updates show command results
 
-### 6. Synchronization and State Management
+### 6. System Synchronization
 
-The system maintains synchronization between multiple components:
+The simplified architecture maintains synchronization through:
 
-#### Buffer State
-- **Real-time Updates**: Buffer stays synchronized with actual terminal content
-- **Change Tracking**: Maintains history of what's been sent to OpenAI
-- **Accumulation**: When OpenAI is busy, changes accumulate for next update
+#### Polling Consistency
+- Regular 500ms polling ensures timely updates
+- Buffer snapshots provide complete state (no incremental updates needed)
+- Cursor position and viewport tracked for context
 
-#### Connection State
-- **Health Monitoring**: Both connections are monitored for disconnections
-- **Reconnection Logic**: Automatic reconnection attempts on connection loss
-- **State Preservation**: Buffer state is maintained across brief disconnections
+#### Connection Management
+- IPC socket for reliable command delivery
+- HTTP polling with automatic retry on failure
+- Graceful handling of connection loss
 
 #### Response Coordination
-- **Response Detection**: System detects when OpenAI is generating a response
-- **Update Queuing**: Terminal updates queue while OpenAI is speaking
-- **Intelligent Resumption**: Accumulated changes are sent once OpenAI is ready
+- Updates queue while OpenAI is speaking
+- Accumulated changes sent after speech completes
+- Maintains conversational flow without interruption
 
 ## Data Flow Summary
 
 The complete data flow creates a continuous feedback loop:
 
-1. **Terminal Output** → VibeTunnel captures Claude's terminal output
-2. **SSE Stream** → Output streams to VibeTunnelTalk via Server-Sent Events
-3. **Buffer Reconstruction** → Virtual buffer maintains current terminal state
-4. **Change Detection** → Smart processor identifies meaningful changes
+1. **Terminal State** → VibeTunnel maintains complete terminal buffer
+2. **Buffer Polling** → VibeTunnelTalk fetches snapshots every 500ms
+3. **Text Extraction** → Smart processor extracts plain text from cell grid
+4. **Change Detection** → Identifies meaningful content changes
 5. **Voice Narration** → OpenAI generates and speaks contextual narration
-6. **Voice Commands** → Your spoken commands are interpreted by OpenAI
-7. **Command Execution** → Commands flow through IPC socket back to terminal
-8. **Terminal Input** → Claude receives and responds to commands
+6. **Voice Commands** → User speech interpreted by OpenAI
+7. **Command Execution** → Commands sent via IPC socket to terminal
+8. **Terminal Update** → Claude responds, updating the buffer
+9. **Cycle Continues** → Next poll captures the updated state
 
-This creates a seamless voice interface where you can hear what Claude is doing and control Claude through natural speech, all while Claude continues working in its normal terminal environment.
+## Key Architecture Benefits
 
-## Key Design Principles
-
-### Minimal Intrusion
-The system observes and controls without modifying Claude's environment. Claude operates normally in its terminal, unaware of the voice layer.
-
-### Intelligent Filtering
-Not everything needs narration. The system intelligently determines what's worth speaking about, avoiding information overload.
-
-### Real-time Responsiveness
-The one-second sampling rate balances responsiveness with efficiency, providing timely updates without overwhelming processing.
-
-### Contextual Understanding
-By maintaining a complete buffer representation, the system understands context and can provide meaningful narration rather than raw output.
-
-### Bidirectional Flow
-Voice commands and narration create a natural conversation flow, making terminal interaction more accessible and intuitive.
-
-## Benefits of This Architecture
-
-### Efficiency
-- Significant data reduction through intelligent diffing
-- Minimal resource usage through sampling strategy
-- Optimized for real-time performance
-
-### Flexibility
-- Works with any VibeTunnel session
-- Adapts to different terminal sizes and configurations
-- Extensible for additional features
-
-### Intelligence
-- Understands context through buffer analysis
-- Provides meaningful narration, not just text-to-speech
-- Interprets natural language commands
+### Simplicity
+- No complex ANSI parsing or terminal emulation needed
+- VibeTunnel handles all terminal complexity server-side
+- Clean separation between data fetching and processing
 
 ### Reliability
-- Robust connection management
-- State preservation across disconnections
-- Graceful degradation when components fail
+- Polling provides predictable, consistent updates
+- Complete state in each snapshot (no state synchronization issues)
+- Simple HTTP/socket protocols with clear error handling
 
-This architecture creates a powerful bridge between the visual world of terminal interfaces and the auditory world of voice interaction, making Claude Code sessions more accessible and interactive through natural voice communication.
+### Performance
+- Efficient binary buffer format when available
+- Smart filtering reduces OpenAI API calls
+- Polling interval balanced for responsiveness vs. overhead
+
+### Maintainability
+- Minimal code surface area
+- Clear data flow with single source of truth
+- Well-defined interfaces between components
+
+## Technical Implementation
+
+### Core Components
+
+1. **VibeTunnelBufferService** (`Services/VibeTunnelBufferService.swift`)
+   - Handles HTTP polling of buffer endpoint
+   - Decodes both JSON and binary buffer formats
+   - Publishes buffer updates via Combine
+
+2. **SmartTerminalProcessor** (`Managers/SmartTerminalProcessor.swift`)
+   - Subscribes to buffer updates
+   - Extracts and compares text content
+   - Manages communication with OpenAI
+
+3. **VibeTunnelSocketManager** (`Managers/VibeTunnelSocketManager.swift`)
+   - Manages IPC socket connection
+   - Sends terminal input commands
+   - Coordinates buffer service lifecycle
+
+4. **OpenAIRealtimeManager** (`Managers/OpenAIRealtimeManager.swift`)
+   - WebSocket connection to OpenAI Realtime API
+   - Audio streaming and speech synthesis
+   - Voice command processing
+
+This architecture provides a robust, maintainable foundation for voice-controlled terminal interaction while leveraging VibeTunnel's powerful terminal processing capabilities.
