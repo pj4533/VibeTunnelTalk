@@ -4,7 +4,7 @@ import OSLog
 
 /// Processes terminal output intelligently by maintaining a buffer and sending only changes to OpenAI
 class SmartTerminalProcessor: ObservableObject {
-    private let logger = AppLogger.terminalProcessor
+    let logger = AppLogger.terminalProcessor
 
     // Dependencies
     private let bufferManager: TerminalBufferManager
@@ -31,7 +31,7 @@ class SmartTerminalProcessor: ObservableObject {
     private var eventQueue = DispatchQueue(label: "terminal.processor", qos: .userInitiated)
 
     // Debug file for OpenAI updates
-    private var debugFileHandle: FileHandle?
+    var debugFileHandle: FileHandle?
 
     init(openAIManager: OpenAIRealtimeManager) {
         self.openAIManager = openAIManager
@@ -70,6 +70,33 @@ class SmartTerminalProcessor: ObservableObject {
         debugFileHandle = nil
 
         isProcessing = false
+    }
+
+    /// Cleanup resources
+    func cleanup() {
+        stopProcessing()
+    }
+
+    /// Process terminal event from VibeTunnelSocketManager
+    func processTerminalEvent(_ data: String) {
+        // Parse the JSON array format [timestamp, "o", content]
+        guard let jsonData = data.data(using: .utf8),
+              let array = try? JSONSerialization.jsonObject(with: jsonData) as? [Any],
+              array.count >= 3,
+              let timestamp = array[0] as? Double,
+              let type = array[1] as? String,
+              let content = array[2] as? String else {
+            return
+        }
+
+        // Create AsciinemaEvent
+        let event = AsciinemaEvent(
+            timestamp: timestamp,
+            type: AsciinemaEvent.EventType(rawValue: type) ?? .output,
+            data: content
+        )
+
+        processAsciinemaEvent(event)
     }
 
     // MARK: - Event Processing
@@ -250,68 +277,4 @@ class SmartTerminalProcessor: ObservableObject {
         }
     }
 
-    // MARK: - Debug Logging
-
-    private func createDebugFile() {
-        // Create filename with timestamp
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd_HHmmss"
-        let timestamp = formatter.string(from: Date())
-        let filename = "openai_updates_\(timestamp).txt"
-
-        // Create logs directory in Library/Logs/VibeTunnelTalk
-        let logsDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/VibeTunnelTalk")
-
-        // Create directory if it doesn't exist
-        try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
-
-        let filePath = logsDir.appendingPathComponent(filename)
-
-        // Create the file
-        FileManager.default.createFile(atPath: filePath.path, contents: nil, attributes: nil)
-
-        // Open file handle for writing
-        debugFileHandle = try? FileHandle(forWritingTo: filePath)
-
-        // Write header
-        let header = """
-        ========================================
-        VibeTunnelTalk - OpenAI Updates Log
-        Started: \(Date())
-        ========================================
-
-        """
-
-        if let data = header.data(using: .utf8) {
-            debugFileHandle?.write(data)
-        }
-
-        logger.info("[DEBUG] Created OpenAI updates log file at: \(filePath.path)")
-    }
-
-    private func writeToDebugFile(_ content: String) {
-        guard let debugFileHandle = debugFileHandle else { return }
-
-        // Create detailed timestamp with milliseconds
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSS"
-        let timestamp = formatter.string(from: Date())
-
-        let entry = """
-
-        [\(timestamp)] - Update #\(totalUpdatesSent)
-        ----------------------------------------
-        Data reduction: \(String(format: "%.1f%%", dataReductionRatio * 100))
-        Characters sent: \(content.count)
-        ----------------------------------------
-        \(content)
-        ========================================
-
-        """
-
-        if let data = entry.data(using: .utf8) {
-            debugFileHandle.write(data)
-        }
-    }
 }

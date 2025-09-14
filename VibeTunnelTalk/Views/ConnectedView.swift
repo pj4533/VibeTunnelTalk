@@ -60,7 +60,7 @@ struct ConnectedView: View {
                     )
                 }
                 
-                Button(action: { socketManager.requestRefresh() }) {
+                Button(action: { socketManager.refreshTerminal() }) {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .help("Request terminal to resend current buffer")
