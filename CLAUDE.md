@@ -40,7 +40,16 @@ open VibeTunnelTalk.xcodeproj
 
 ## Architecture
 
-The application follows a modular architecture with clear separation of concerns:
+The application follows a modular architecture with clear separation of concerns.
+
+### Data Flow Architecture
+
+**Important**: For a comprehensive understanding of how data flows through the application, refer to `docs/Data_Flow_Architecture.md`. This document explains:
+- How VibeTunnelTalk connects to and monitors Claude Code sessions
+- The virtual terminal buffer system that mirrors Claude's terminal state
+- The intelligent change detection and filtering pipeline
+- The bidirectional voice communication flow
+- The complete data flow from terminal output to voice narration and back
 
 ### Core Components
 
