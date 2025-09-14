@@ -162,9 +162,15 @@ class VibeTunnelSocketManager: ObservableObject {
         // Create SSE client for streaming terminal output
         sseClient = VibeTunnelSSEClient()
 
-        // Subscribe to asciinema events
-        sseSubscription = sseClient?.asciinemaEvent.sink { [weak self] event in
-            self?.handleSSEEvent(event)
+        // If we have a smart processor, let it handle the SSE events directly
+        if let terminalProcessor = terminalProcessor, let sseClient = sseClient {
+            // Start the processor with the SSE client (this sets up the subscription internally)
+            terminalProcessor.startProcessing(sseClient: sseClient)
+        } else {
+            // Fallback: Subscribe to asciinema events manually
+            sseSubscription = sseClient?.asciinemaEvent.sink { [weak self] event in
+                self?.handleSSEEvent(event)
+            }
         }
 
         sseClient?.connect(sessionId: sessionId)
@@ -172,8 +178,14 @@ class VibeTunnelSocketManager: ObservableObject {
     }
 
     private func stopSSEClient() {
+        // Stop the smart processor if it's running
+        terminalProcessor?.stopProcessing()
+
+        // Cancel manual subscription if we have one
         sseSubscription?.cancel()
         sseSubscription = nil
+
+        // Disconnect SSE client
         sseClient?.disconnect()
         sseClient = nil
         logger.info("[VIBETUNNEL-SSE] Stopped SSE client")

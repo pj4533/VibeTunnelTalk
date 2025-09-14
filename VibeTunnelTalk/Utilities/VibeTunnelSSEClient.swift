@@ -67,7 +67,10 @@ class VibeTunnelSSEClient: NSObject {
         
         // Try to get auth token from running VibeTunnel process
         if let authToken = getVibeTunnelAuthToken() {
+            logger.info("[SSE] Using auth token: \(authToken)")
             request.setValue(authToken, forHTTPHeaderField: "x-vibetunnel-local")
+        } else {
+            logger.warning("[SSE] No auth token found, connection may fail")
         }
         
         task = session?.dataTask(with: request)
@@ -112,8 +115,13 @@ class VibeTunnelSSEClient: NSObject {
     
     private func processBuffer() {
         // SSE format: lines separated by \n, events separated by \n\n
-        guard let text = String(data: buffer, encoding: .utf8) else { return }
-        
+        guard let text = String(data: buffer, encoding: .utf8) else {
+            logger.debug("[SSE] Unable to decode buffer as UTF-8")
+            return
+        }
+
+        // Don't log buffer processing - too noisy
+
         // Split by double newline to get complete events
         let events = text.components(separatedBy: "\n\n")
         
@@ -160,6 +168,8 @@ class VibeTunnelSSEClient: NSObject {
             }
         }
 
+        // Don't log every event - it's too noisy
+
         // Handle different event types
         if eventType.isEmpty || eventType == "data" {
             // Terminal output data - should be asciinema JSON
@@ -168,6 +178,7 @@ class VibeTunnelSSEClient: NSObject {
             }
         } else {
             // Other event type
+            logger.debug("[SSE] Unhandled event type: \(eventType)")
         }
     }
 
@@ -210,6 +221,8 @@ class VibeTunnelSSEClient: NSObject {
                             type: eventType,
                             data: data
                         )
+
+                        // Don't log every parsed event
 
                         DispatchQueue.main.async {
                             // Emit the structured event
@@ -259,6 +272,9 @@ extension VibeTunnelSSEClient: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         // Append to buffer and process
         buffer.append(data)
+
+        // Don't log raw data - use debounced logger instead
+
         // Use debounced logging for data flow
         debouncedLogger.logDataFlow(key: "SSE", bytes: data.count, action: "Receiving data")
         processBuffer()
