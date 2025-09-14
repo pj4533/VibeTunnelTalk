@@ -5,6 +5,7 @@ import OSLog
 /// Processes terminal output intelligently by maintaining a buffer and sending only changes to OpenAI
 class SmartTerminalProcessor: ObservableObject {
     let logger = AppLogger.terminalProcessor
+    private let debouncedLogger: DebouncedLogger
 
     // Dependencies
     private let bufferManager: TerminalBufferManager
@@ -36,6 +37,7 @@ class SmartTerminalProcessor: ObservableObject {
     init(openAIManager: OpenAIRealtimeManager) {
         self.openAIManager = openAIManager
         self.bufferManager = TerminalBufferManager(cols: 120, rows: 40) // Default size, will resize
+        self.debouncedLogger = DebouncedLogger(logger: AppLogger.terminalProcessor)
         createDebugFile()
     }
 
@@ -48,7 +50,7 @@ class SmartTerminalProcessor: ObservableObject {
             .receive(on: eventQueue)
             .sink { [weak self] event in
                 guard let self = self else { return }
-                self.logger.debug("[PROCESSOR] Received event from SSE")
+                // Don't log every single event, it's too noisy
                 self.processAsciinemaEvent(event)
             }
 
@@ -105,16 +107,12 @@ class SmartTerminalProcessor: ObservableObject {
     private func processAsciinemaEvent(_ event: AsciinemaEvent) {
         totalEventsProcessed += 1
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSS"
-        let timestamp = formatter.string(from: Date())
-        logger.debug("[PROCESSOR @ \(timestamp)] Processing event type: \(event.type.rawValue), data length: \(event.data.count)")
-
         switch event.type {
         case .output:
             // Feed output to buffer manager
             bufferManager.processOutput(event.data)
-            logger.debug("[PROCESSOR @ \(timestamp)] Fed \(event.data.count) chars to buffer")
+            // Use debounced logging for continuous data flow
+            debouncedLogger.logDataFlow(key: "PROCESSOR", bytes: event.data.count, action: "Processing terminal output")
 
         case .resize:
             // Parse resize dimensions (format: "120x40")
@@ -122,13 +120,15 @@ class SmartTerminalProcessor: ObservableObject {
             if parts.count == 2,
                let cols = Int(parts[0]),
                let rows = Int(parts[1]) {
-                logger.debug("[PROCESSOR] Terminal resized to \(cols)x\(rows)")
+                logger.info("[PROCESSOR] Terminal resized to \(cols)x\(rows)")
                 bufferManager.resize(cols: cols, rows: rows)
             }
 
         case .input:
-            // User typed something - might be useful context
-            logger.debug("[PROCESSOR] User input detected")
+            // User typed something - use debounced logging to avoid spam
+            debouncedLogger.logDebounced(key: "USER_INPUT",
+                                        initialMessage: "User typing...",
+                                        continuationMessage: "User finished typing")
 
         case .exit:
             logger.info("[PROCESSOR] Session exited")

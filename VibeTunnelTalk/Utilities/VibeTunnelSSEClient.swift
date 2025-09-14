@@ -19,6 +19,7 @@ struct AsciinemaEvent {
 /// Server-Sent Events client for VibeTunnel terminal output streaming
 class VibeTunnelSSEClient: NSObject {
     private let logger = AppLogger.network
+    private let debouncedLogger: DebouncedLogger
 
     let terminalOutput = PassthroughSubject<String, Never>()
     let asciinemaEvent = PassthroughSubject<AsciinemaEvent, Never>()
@@ -31,6 +32,7 @@ class VibeTunnelSSEClient: NSObject {
     private var sessionStartTime: Date?
     
     override init() {
+        self.debouncedLogger = DebouncedLogger(logger: AppLogger.network)
         super.init()
         
         // Create a custom URLSession with delegate
@@ -210,11 +212,6 @@ class VibeTunnelSSEClient: NSObject {
                         )
 
                         DispatchQueue.main.async {
-                            let formatter = DateFormatter()
-                            formatter.dateFormat = "HH:mm:ss.SSS"
-                            let timestamp = formatter.string(from: Date())
-                            self.logger.debug("[SSE @ \(timestamp)] Publishing event: \(eventType.rawValue), data length: \(data.count)")
-
                             // Emit the structured event
                             self.asciinemaEvent.send(event)
 
@@ -262,10 +259,8 @@ extension VibeTunnelSSEClient: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         // Append to buffer and process
         buffer.append(data)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSS"
-        let timestamp = formatter.string(from: Date())
-        logger.debug("[SSE @ \(timestamp)] Received \(data.count) bytes, buffer size: \(self.buffer.count)")
+        // Use debounced logging for data flow
+        debouncedLogger.logDataFlow(key: "SSE", bytes: data.count, action: "Receiving data")
         processBuffer()
     }
     
