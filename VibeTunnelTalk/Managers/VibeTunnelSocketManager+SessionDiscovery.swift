@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import Network
 
 // MARK: - Session Discovery
 extension VibeTunnelSocketManager {
@@ -55,15 +56,22 @@ extension VibeTunnelSocketManager {
                 return false
             }
 
-            // Check for ipc.sock file
+            // Check for ipc.sock file and validate it's active
             let hasSocket = fm.fileExists(atPath: socketPath)
             if hasSocket {
-                // Found valid session
+                // Try to connect to verify it's a live socket
+                if isSocketActive(at: socketPath) {
+                    // Found valid active session
+                    return true
+                } else {
+                    // Socket file exists but is stale
+                    logger.debug("[VIBETUNNEL-DISCOVERY] Socket file exists but is stale: \(sessionId)")
+                    return false
+                }
             } else {
                 // No socket file
+                return false
             }
-
-            return hasSocket
         }
 
         if validSessions.isEmpty {
@@ -73,5 +81,44 @@ extension VibeTunnelSocketManager {
         }
 
         return validSessions
+    }
+
+    /// Check if a Unix domain socket is active by attempting to connect
+    private func isSocketActive(at path: String) -> Bool {
+        let semaphore = DispatchSemaphore(value: 0)
+        var isActive = false
+
+        let endpoint = NWEndpoint.unix(path: path)
+        let connection = NWConnection(to: endpoint, using: .tcp)
+
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                // Successfully connected - socket is active
+                isActive = true
+                connection.cancel()
+                semaphore.signal()
+            case .failed:
+                // Failed to connect - socket is stale
+                isActive = false
+                semaphore.signal()
+            case .cancelled:
+                semaphore.signal()
+            default:
+                break
+            }
+        }
+
+        // Start connection attempt
+        let testQueue = DispatchQueue(label: "socket.test")
+        connection.start(queue: testQueue)
+
+        // Wait up to 1 second for connection result
+        _ = semaphore.wait(timeout: .now() + 1.0)
+
+        // Clean up
+        connection.cancel()
+
+        return isActive
     }
 }

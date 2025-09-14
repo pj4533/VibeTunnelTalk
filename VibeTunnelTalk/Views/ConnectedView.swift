@@ -7,7 +7,6 @@ struct ConnectedView: View {
     @ObservedObject var openAIManager: OpenAIRealtimeManager
     
     @State private var isExpanded = true
-    @State private var terminalOutput = ""
     @State private var showTerminal = false
     
     private let logger = AppLogger.ui
@@ -43,9 +42,15 @@ struct ConnectedView: View {
                         TranscriptionCard(text: openAIManager.transcription)
                     }
                     
-                    // Terminal Preview (Optional)
+                    // Terminal Buffer Display
                     if showTerminal {
-                        TerminalPreviewCard(output: terminalOutput)
+                        if let sessionId = socketManager.currentSessionId {
+                            TerminalBufferCard(sessionId: sessionId, socketManager: socketManager)
+                        } else {
+                            Text("Terminal buffer not available")
+                                .foregroundColor(.secondary)
+                                .padding()
+                        }
                     }
                 }
                 .padding()
@@ -55,7 +60,7 @@ struct ConnectedView: View {
             HStack {
                 Button(action: { showTerminal.toggle() }) {
                     Label(
-                        showTerminal ? "Hide Terminal" : "Show Terminal",
+                        showTerminal ? "Hide Terminal Buffer" : "Show Terminal Buffer",
                         systemImage: "terminal"
                     )
                 }
@@ -73,14 +78,6 @@ struct ConnectedView: View {
                 .foregroundColor(.red)
             }
             .padding()
-        }
-        .onReceive(socketManager.terminalOutput) { output in
-            terminalOutput += output
-            // Keep last 1000 lines
-            let lines = terminalOutput.components(separatedBy: .newlines)
-            if lines.count > 1000 {
-                terminalOutput = lines.suffix(1000).joined(separator: "\n")
-            }
         }
         .onAppear {
             // View appeared
@@ -144,24 +141,18 @@ struct TranscriptionCard: View {
     }
 }
 
-struct TerminalPreviewCard: View {
-    let output: String
-    
+struct TerminalBufferCard: View {
+    let sessionId: String
+    @ObservedObject var socketManager: VibeTunnelSocketManager
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Terminal Output", systemImage: "terminal")
+            Label("Terminal Buffer", systemImage: "terminal")
                 .font(.headline)
-            
-            ScrollView {
-                Text(output)
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(height: 150)
-            .padding(10)
-            .background(Color.black.opacity(0.9))
-            .foregroundColor(.green)
-            .cornerRadius(8)
+
+            TerminalBufferView(sessionId: sessionId, fontSize: 11)
+                .frame(height: 300)
+                .cornerRadius(8)
         }
         .padding()
         .background(Color.gray.opacity(0.1))

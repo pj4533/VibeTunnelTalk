@@ -74,7 +74,9 @@ The application follows a modular architecture with clear separation of concerns
 
 ### VibeTunnel Integration
 
-**VibeTunnel Source Code Location**: `~/Developer/vibetunnel`
+**VibeTunnel Source Code Locations**:
+- Web/Server: `~/Developer/vibetunnel`
+- iOS/Swift: `~/Developer/vibetunnel/ios` (Contains Swift implementations for terminal buffer handling, models, and rendering)
 
 The app communicates with VibeTunnel sessions using two mechanisms:
 

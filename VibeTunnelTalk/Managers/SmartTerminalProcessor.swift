@@ -8,7 +8,7 @@ class SmartTerminalProcessor: ObservableObject {
     private let debouncedLogger: DebouncedLogger
 
     // Dependencies
-    private let bufferManager: TerminalBufferManager
+    let bufferManager: TerminalBufferManager  // Made public for UI access
     private let openAIManager: OpenAIRealtimeManager
 
     // Configuration
@@ -77,6 +77,12 @@ class SmartTerminalProcessor: ObservableObject {
     /// Cleanup resources
     func cleanup() {
         stopProcessing()
+    }
+
+    /// Get the current terminal buffer for display
+    func getTerminalBuffer() -> (buffer: [[TerminalCell]], cursorRow: Int, cursorCol: Int, cols: Int, rows: Int) {
+        let snapshot = bufferManager.getBufferSnapshot()
+        return (snapshot.buffer, snapshot.cursorRow, snapshot.cursorCol, bufferManager.cols, bufferManager.rows)
     }
 
     /// Process terminal event from VibeTunnelSocketManager

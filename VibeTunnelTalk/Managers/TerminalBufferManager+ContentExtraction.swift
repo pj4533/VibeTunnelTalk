@@ -3,6 +3,11 @@ import Foundation
 // MARK: - Content Extraction
 extension TerminalBufferManager {
 
+    /// Get the current buffer snapshot for display
+    func getBufferSnapshot() -> (buffer: [[TerminalCell]], cursorRow: Int, cursorCol: Int) {
+        return (buffer, cursorRow, cursorCol)
+    }
+
     /// Get the current buffer as plain text
     func getBufferText() -> String {
         var result = ""

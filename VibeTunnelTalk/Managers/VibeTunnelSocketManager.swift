@@ -8,7 +8,6 @@ class VibeTunnelSocketManager: ObservableObject {
 
     @Published var isConnected = false
     @Published var currentSessionId: String?
-    let terminalOutput = PassthroughSubject<String, Never>()
 
     var connection: NWConnection?
     var receiveBuffer = Data()
@@ -34,12 +33,17 @@ class VibeTunnelSocketManager: ObservableObject {
         logger.info("[VIBETUNNEL] Smart terminal processing configured")
     }
 
+    /// Get the terminal processor for UI access
+    func getTerminalProcessor() -> SmartTerminalProcessor? {
+        return terminalProcessor
+    }
+
     /// Connect to a VibeTunnel session
     func connect(to sessionId: String) {
         logger.info("[VIBETUNNEL] Attempting to connect to session: \(sessionId)")
 
-        // Disconnect existing connection
-        disconnect()
+        // Disconnect existing connection but preserve the new sessionId
+        disconnectInternal(clearSessionId: false)
 
         // Store session ID
         currentSessionId = sessionId
@@ -76,6 +80,11 @@ class VibeTunnelSocketManager: ObservableObject {
 
     /// Disconnect from current session
     func disconnect() {
+        disconnectInternal(clearSessionId: true)
+    }
+
+    /// Internal disconnect with option to preserve sessionId
+    private func disconnectInternal(clearSessionId: Bool) {
         logger.info("[VIBETUNNEL] Disconnecting...")
 
         connection?.cancel()
@@ -95,7 +104,9 @@ class VibeTunnelSocketManager: ObservableObject {
 
         DispatchQueue.main.async {
             self.isConnected = false
-            self.currentSessionId = nil
+            if clearSessionId {
+                self.currentSessionId = nil
+            }
         }
     }
 
@@ -199,14 +210,6 @@ class VibeTunnelSocketManager: ObservableObject {
             if let jsonData = try? JSONSerialization.data(withJSONObject: jsonArray),
                let jsonString = String(data: jsonData, encoding: .utf8) {
                 terminalProcessor.processTerminalEvent(jsonString)
-            }
-        } else {
-            // Fallback to direct output for output events
-            if event.type == .output {
-                let cleanedData = removeANSIEscapeCodes(from: event.data)
-                DispatchQueue.main.async {
-                    self.terminalOutput.send(cleanedData)
-                }
             }
         }
     }

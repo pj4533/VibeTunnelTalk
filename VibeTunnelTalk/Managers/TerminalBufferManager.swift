@@ -15,8 +15,8 @@ class TerminalBufferManager: ObservableObject {
     var previousBuffer: [[TerminalCell]] = []
 
     // Cursor position
-    private var cursorRow: Int = 0
-    private var cursorCol: Int = 0
+    var cursorRow: Int = 0
+    var cursorCol: Int = 0
 
     // ANSI parser state
     private var ansiParser = ANSIParser()
