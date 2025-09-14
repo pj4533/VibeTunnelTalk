@@ -19,12 +19,6 @@ class VibeTunnelSocketManager: ObservableObject {
     // Smart terminal processor for intelligent data filtering
     private var terminalProcessor: SmartTerminalProcessor?
 
-    // Debug file handle
-    var debugFileHandle: FileHandle?
-    let debugQueue = DispatchQueue(label: "vibetunnel.debug", qos: .background)
-
-    // Debug output control
-    var debugOutputEnabled = false
 
     /// Configure the smart terminal processor with OpenAI manager
     func configureSmartProcessing(with openAIManager: OpenAIRealtimeManager) {
@@ -71,10 +65,6 @@ class VibeTunnelSocketManager: ObservableObject {
         // Start buffer service for terminal snapshots
         startBufferService(sessionId: sessionId)
 
-        // Enable debug output if configured
-        if debugOutputEnabled {
-            createDebugFile(sessionId: sessionId)
-        }
     }
 
     /// Disconnect from current session
@@ -96,10 +86,6 @@ class VibeTunnelSocketManager: ObservableObject {
         // Clean up smart processor
         terminalProcessor?.cleanup()
 
-        // Close debug file if open
-        if debugOutputEnabled {
-            closeDebugFile()
-        }
 
         DispatchQueue.main.async {
             self.isConnected = false
@@ -114,11 +100,6 @@ class VibeTunnelSocketManager: ObservableObject {
         guard isConnected else {
             logger.warning("[VIBETUNNEL] Cannot send input - not connected")
             return
-        }
-
-        // Write input to debug file if debug is enabled
-        if debugOutputEnabled {
-            writeToDebugFile(text, source: "INPUT")
         }
 
         let message = IPCMessage.createStdinData(text)

@@ -25,13 +25,6 @@ extension VibeTunnelSocketManager {
     }
 
     func handleReceivedData(_ data: Data) {
-        // Write raw IPC data to debug file if debug is enabled
-        if debugOutputEnabled {
-            if let hexString = data.map({ String(format: "%02hhx", $0) }).joined(separator: " ").data(using: .utf8) {
-                writeToDebugFile(String(data: hexString, encoding: .utf8) ?? "", source: "IPC_HEX")
-            }
-        }
-
         receiveBuffer.append(data)
 
         // Process complete messages from buffer
@@ -55,10 +48,6 @@ extension VibeTunnelSocketManager {
             // Extract message payload
             let payload = receiveBuffer[5..<totalMessageSize]
 
-            // Write parsed IPC message to debug file if debug is enabled
-            if debugOutputEnabled {
-                writeToDebugFile("Type: \(header.type), Length: \(header.length), Payload: \(String(data: payload, encoding: .utf8) ?? "binary")", source: "IPC_PARSED")
-            }
 
             // Process the message
             processMessage(header: header, payload: payload)

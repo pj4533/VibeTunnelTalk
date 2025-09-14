@@ -23,7 +23,7 @@ class SmartTerminalProcessor: ObservableObject {
 
     // For diffing
     private var lastSentContent = ""
-    private var lastBufferSnapshot: BufferSnapshot?
+    internal var lastBufferSnapshot: BufferSnapshot?
 
     // Subscriptions
     private var bufferSubscription: AnyCancellable?
@@ -34,12 +34,14 @@ class SmartTerminalProcessor: ObservableObject {
     init(openAIManager: OpenAIRealtimeManager) {
         self.openAIManager = openAIManager
         self.debouncedLogger = DebouncedLogger(logger: AppLogger.terminalProcessor)
-        createDebugFile()
     }
 
     /// Start processing buffer snapshots from buffer service
     func startProcessing(bufferService: VibeTunnelBufferService, sessionId: String) {
         logger.info("[PROCESSOR] Starting smart terminal processing for session: \(sessionId)")
+
+        // Create debug file for this session
+        createDebugFile()
 
         self.bufferService = bufferService
 
@@ -48,9 +50,14 @@ class SmartTerminalProcessor: ObservableObject {
             .compactMap { $0 } // Filter out nil values
             .removeDuplicates { prev, current in
                 // Only process if the buffer content has actually changed
-                self.areBuffersEqual(prev, current)
+                let equal = self.areBuffersEqual(prev, current)
+                if equal {
+                    self.logger.debug("[PROCESSOR] Skipping duplicate buffer")
+                }
+                return equal
             }
             .sink { [weak self] snapshot in
+                self?.logger.debug("[PROCESSOR] Received buffer snapshot from publisher")
                 self?.processBufferSnapshot(snapshot)
             }
 
@@ -86,8 +93,11 @@ class SmartTerminalProcessor: ObservableObject {
     private func processBufferSnapshot(_ snapshot: BufferSnapshot) {
         totalSnapshotsProcessed += 1
 
+        logger.info("[PROCESSOR] Processing buffer snapshot #\(self.totalSnapshotsProcessed)")
+
         // Extract text content from buffer
         let currentContent = extractTextFromBuffer(snapshot)
+        logger.debug("[PROCESSOR] Extracted \(currentContent.count) characters from buffer")
 
         // Check if content has changed significantly
         let changeCount = countChanges(from: lastSentContent, to: currentContent)
@@ -101,6 +111,10 @@ class SmartTerminalProcessor: ObservableObject {
         if changeCount >= minChangeThreshold {
             sendUpdateToOpenAI(currentContent, changeCount: changeCount)
             lastSentContent = currentContent
+        } else if changeCount > 0 {
+            // Log when we skip an update due to threshold
+            logger.debug("[PROCESSOR] Skipped update: \(changeCount) chars changed (below threshold of \(self.minChangeThreshold))")
+            writeSkippedUpdateToDebugFile(currentContent, changeCount: changeCount, reason: "Below threshold")
         }
 
         lastBufferSnapshot = snapshot
@@ -172,7 +186,12 @@ class SmartTerminalProcessor: ObservableObject {
 
     /// Send update to OpenAI
     private func sendUpdateToOpenAI(_ content: String, changeCount: Int) {
-        guard !content.isEmpty else { return }
+        logger.info("[PROCESSOR] sendUpdateToOpenAI called with \(content.count) chars, \(changeCount) changed")
+
+        guard !content.isEmpty else {
+            logger.warning("[PROCESSOR] Skipping update - content is empty")
+            return
+        }
 
         // Don't send updates if OpenAI is currently speaking
         guard !openAIManager.isSpeaking else {
@@ -189,13 +208,13 @@ class SmartTerminalProcessor: ObservableObject {
             dataReductionRatio = 1.0 - (Double(sentSize) / Double(originalSize))
         }
 
-        logger.info("[PROCESSOR] Sending update to OpenAI: \(changeCount) chars changed, ratio: \(String(format: "%.1f%%", self.dataReductionRatio * 100))")
-
-        // Write to debug file
-        writeToDebugFile(content)
+        logger.info("[PROCESSOR] Sending update #\(self.totalUpdatesSent) to OpenAI: \(changeCount) chars changed, ratio: \(String(format: "%.1f%%", self.dataReductionRatio * 100))")
 
         // Format the terminal content for OpenAI
         let formattedContent = formatForOpenAI(content)
+
+        // Write the formatted content to debug file (what we're actually sending to OpenAI)
+        writeToDebugFile(formattedContent)
 
         // Send to OpenAI
         openAIManager.sendTerminalContext(formattedContent)

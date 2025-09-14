@@ -1,7 +1,6 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @Binding var debugOutputEnabled: Bool
     @AppStorage("useSmartProcessing") private var useSmartProcessing = true
     @AppStorage("sampleInterval") private var sampleInterval = 1.0
     @AppStorage("minChangeThreshold") private var minChangeThreshold = 10.0
@@ -107,10 +106,7 @@ struct SettingsView: View {
                     // Debug Section
                     GroupBox(label: Label("Debug Options", systemImage: "ladybug")) {
                         VStack(alignment: .leading, spacing: 12) {
-                            Toggle("Enable Debug Output", isOn: $debugOutputEnabled)
-                                .help("Save raw terminal output to debug files")
-
-                            Text("Debug files are saved to ~/Library/Logs/VibeTunnelTalk/")
+                            Text("OpenAI updates are logged to ~/Library/Logs/VibeTunnelTalk/")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
 

@@ -20,7 +20,6 @@ struct ContentView: View {
     @State private var isConnecting = false
     @State private var showSettings = false
     @State private var hasStoredAPIKey = false
-    @AppStorage("debugOutputEnabled") private var debugOutputEnabled = false
 
     @State private var cancelBag = Set<AnyCancellable>()
     
@@ -76,7 +75,7 @@ struct ContentView: View {
             refreshSessions()
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView(debugOutputEnabled: $debugOutputEnabled) {
+            SettingsView {
                 // Settings saved, reload the API key
                 if let key = KeychainHelper.loadAPIKey() {
                     openAIManager.updateAPIKey(key)
@@ -115,9 +114,6 @@ struct ContentView: View {
         }
 
         isConnecting = true
-
-        // Set debug mode before connecting
-        socketManager.debugOutputEnabled = debugOutputEnabled
 
         // Connect to VibeTunnel session
         socketManager.connect(to: session)
