@@ -109,6 +109,11 @@ class SmartTerminalProcessor: ObservableObject {
 
         switch event.type {
         case .output:
+            // Log every 10th event to track if events are still flowing
+            if totalEventsProcessed % 10 == 0 {
+                logger.debug("[PROCESSOR] Event #\(self.totalEventsProcessed): Processing \(event.data.count) bytes")
+            }
+
             // Feed output to buffer manager
             bufferManager.processOutput(event.data)
             // Use debounced logging for continuous data flow
@@ -174,20 +179,29 @@ class SmartTerminalProcessor: ObservableObject {
 
                 // Only send if the diff is significant
                 if diff.count > self.minChangeThreshold {
-                    // Check if OpenAI is ready to receive
-                    // We need to check this synchronously to avoid race conditions
-                    var isOpenAIBusy = false
-                    DispatchQueue.main.sync {
-                        isOpenAIBusy = self.openAIManager.isResponseInProgress
-                    }
+                    // Capture values before async dispatch
+                    let capturedDiff = diff
+                    let capturedContent = currentContent
+                    let capturedTimestamp = timestamp
 
-                    if !isOpenAIBusy {
-                        self.logger.info("[SAMPLE @ \(timestamp)] Sending update: \(diff.count) chars changed")
-                        self.sendUpdateToOpenAI(diff: diff, fullContent: currentContent)
-                        self.lastSentContent = currentContent
-                    } else {
-                        self.logger.info("[SAMPLE @ \(timestamp)] OpenAI busy, accumulating \(diff.count) chars of changes")
-                        // Don't update lastSentContent - we'll send accumulated changes when OpenAI is ready
+                    // Check if OpenAI is ready to receive
+                    // Use async dispatch to avoid deadlock
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
+
+                        if !self.openAIManager.isResponseInProgress {
+                            self.logger.info("[SAMPLE @ \(capturedTimestamp)] Sending update: \(capturedDiff.count) chars changed")
+
+                            // Update lastSentContent back on eventQueue to maintain consistency
+                            self.eventQueue.async { [weak self] in
+                                self?.lastSentContent = capturedContent
+                            }
+
+                            self.sendUpdateToOpenAI(diff: capturedDiff, fullContent: capturedContent)
+                        } else {
+                            self.logger.info("[SAMPLE @ \(capturedTimestamp)] OpenAI busy, accumulating \(capturedDiff.count) chars of changes")
+                            // Don't update lastSentContent - we'll send accumulated changes when OpenAI is ready
+                        }
                     }
                 } else if diff.count > 0 {
                     self.logger.debug("[SAMPLE @ \(timestamp)] Changes too small (\(diff.count) chars), buffering...")

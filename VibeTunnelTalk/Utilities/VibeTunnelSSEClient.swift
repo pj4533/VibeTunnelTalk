@@ -30,6 +30,10 @@ class VibeTunnelSSEClient: NSObject {
 
     // Track session start time for relative timestamps
     private var sessionStartTime: Date?
+
+    // For periodic logging to detect stalled streams
+    private var lastDataReceivedTime = Date()
+    private var totalBytesReceived = 0
     
     override init() {
         self.debouncedLogger = DebouncedLogger(logger: AppLogger.network)
@@ -224,14 +228,13 @@ class VibeTunnelSSEClient: NSObject {
 
                         // Don't log every parsed event
 
-                        DispatchQueue.main.async {
-                            // Emit the structured event
-                            self.asciinemaEvent.send(event)
+                        // Emit events directly without main queue dispatch to avoid blocking
+                        // Subscribers should handle their own thread management
+                        self.asciinemaEvent.send(event)
 
-                            // For backward compatibility, also send output events as raw text
-                            if eventType == .output {
-                                self.terminalOutput.send(data)
-                            }
+                        // For backward compatibility, also send output events as raw text
+                        if eventType == .output {
+                            self.terminalOutput.send(data)
                         }
                     }
                 }
@@ -246,9 +249,8 @@ class VibeTunnelSSEClient: NSObject {
             }
         } catch {
             // If not JSON, treat as raw text (fallback)
-            DispatchQueue.main.async {
-                self.terminalOutput.send(jsonString)
-            }
+            // Send directly without main queue dispatch to avoid blocking
+            self.terminalOutput.send(jsonString)
         }
     }
 }
@@ -273,7 +275,20 @@ extension VibeTunnelSSEClient: URLSessionDataDelegate {
         // Append to buffer and process
         buffer.append(data)
 
-        // Don't log raw data - use debounced logger instead
+        // Track data reception
+        let now = Date()
+        let timeSinceLastData = now.timeIntervalSince(lastDataReceivedTime)
+        totalBytesReceived += data.count
+
+        // Only log if it's been more than 5 seconds since last data (to detect stalls)
+        // or every 100KB of data
+        if timeSinceLastData > 5.0 || totalBytesReceived > 100_000 {
+            let timestamp = DateFormatter.localizedString(from: now, dateStyle: .none, timeStyle: .medium)
+            logger.debug("[SSE @ \(timestamp)] Stream active: \(self.totalBytesReceived) total bytes received")
+            totalBytesReceived = 0
+        }
+
+        lastDataReceivedTime = now
 
         // Use debounced logging for data flow
         debouncedLogger.logDataFlow(key: "SSE", bytes: data.count, action: "Receiving data")
