@@ -14,12 +14,16 @@ struct ContentView: View {
     @StateObject private var socketManager = VibeTunnelSocketManager()
     @StateObject private var openAIManager = OpenAIRealtimeManager()
     @StateObject private var commandProcessor = VoiceCommandProcessor()
+    @StateObject private var authService = VibeTunnelAuthService()
 
     @State private var availableSessions: [String] = []
     @State private var selectedSession: String?
     @State private var isConnecting = false
     @State private var showSettings = false
     @State private var hasStoredAPIKey = false
+    @State private var isAuthenticated = false
+    @State private var showServerError = false
+    @State private var isCheckingAuth = true  // New state for loading
 
     @State private var cancelBag = Set<AnyCancellable>()
     
@@ -34,7 +38,20 @@ struct ContentView: View {
             Divider()
             
             // Main Content
-            if !hasStoredAPIKey {
+            if isCheckingAuth {
+                // Show loading while checking authentication
+                AuthCheckingView()
+            } else if !authService.isServerRunning && showServerError {
+                // Server not running error
+                ServerNotRunningView()
+            } else if !isAuthenticated {
+                // Authentication required
+                LoginView(authService: authService) {
+                    // Successfully authenticated
+                    isAuthenticated = true
+                    setupAfterAuth()
+                }
+            } else if !hasStoredAPIKey {
                 APIKeySetupView {
                     // API key was saved successfully
                     if let key = KeychainHelper.loadAPIKey() {
@@ -66,13 +83,7 @@ struct ContentView: View {
         }
         .frame(minWidth: 600, minHeight: 400)
         .onAppear {
-            // Check for stored API key
-            if let key = KeychainHelper.loadAPIKey(), !key.isEmpty {
-                hasStoredAPIKey = true
-                openAIManager.updateAPIKey(key)
-            }
-            setupBindings()
-            refreshSessions()
+            checkAuthenticationAndServer()
         }
         .sheet(isPresented: $showSettings) {
             SettingsView {
@@ -85,7 +96,64 @@ struct ContentView: View {
         }
     }
     
+    private func checkAuthenticationAndServer() {
+        Task {
+            // Start checking
+            await MainActor.run {
+                isCheckingAuth = true
+            }
+
+            // Check server status
+            let serverRunning = await authService.checkServerStatus()
+
+            if !serverRunning {
+                await MainActor.run {
+                    showServerError = true
+                    isCheckingAuth = false
+                }
+                return
+            }
+
+            // Check if authentication is required
+            let authRequired = await authService.checkAuthRequired()
+
+            if !authRequired {
+                // No auth required
+                await MainActor.run {
+                    isAuthenticated = true
+                    setupAfterAuth()
+                    isCheckingAuth = false
+                }
+            } else {
+                // Try to load saved authentication
+                await authService.loadSavedAuthentication()
+
+                await MainActor.run {
+                    if authService.isAuthenticated {
+                        isAuthenticated = true
+                        setupAfterAuth()
+                    }
+                    isCheckingAuth = false
+                }
+            }
+        }
+    }
+
+    private func setupAfterAuth() {
+        // Check for stored API key
+        if let key = KeychainHelper.loadAPIKey(), !key.isEmpty {
+            hasStoredAPIKey = true
+            openAIManager.updateAPIKey(key)
+        }
+
+        setupBindings()
+        refreshSessions()
+    }
+
     private func setupBindings() {
+        // Configure authentication
+        socketManager.configureAuthentication(with: authService)
+
         // Configure smart terminal processing
         socketManager.configureSmartProcessing(with: openAIManager)
         logger.info("[CONTENT] ✅ Smart terminal processing configured")
@@ -95,6 +163,17 @@ struct ContentView: View {
             .sink { functionCall in
                 commandProcessor.processFunctionCall(functionCall) { command in
                     socketManager.sendInput(command)
+                }
+            }
+            .store(in: &cancelBag)
+
+        // Monitor authentication status
+        authService.$isAuthenticated
+            .sink { authenticated in
+                if !authenticated {
+                    // Lost authentication, disconnect
+                    socketManager.disconnect()
+                    self.isAuthenticated = false
                 }
             }
             .store(in: &cancelBag)

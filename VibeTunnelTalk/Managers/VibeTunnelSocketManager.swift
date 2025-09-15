@@ -19,11 +19,20 @@ class VibeTunnelSocketManager: ObservableObject {
     // Smart terminal processor for intelligent data filtering
     private var terminalProcessor: SmartTerminalProcessor?
 
+    // Authentication service
+    private var authService: VibeTunnelAuthService?
+
 
     /// Configure the smart terminal processor with OpenAI manager
     func configureSmartProcessing(with openAIManager: OpenAIRealtimeManager) {
         terminalProcessor = SmartTerminalProcessor(openAIManager: openAIManager)
         logger.info("[VIBETUNNEL] Smart terminal processing configured")
+    }
+
+    /// Configure authentication service
+    func configureAuthentication(with authService: VibeTunnelAuthService) {
+        self.authService = authService
+        logger.info("[VIBETUNNEL] Authentication service configured")
     }
 
     /// Get the terminal processor for UI access
@@ -152,6 +161,11 @@ class VibeTunnelSocketManager: ObservableObject {
     private func startBufferService(sessionId: String) {
         // Create buffer service for fetching terminal snapshots
         bufferService = VibeTunnelBufferService()
+
+        // Configure buffer service with auth service if available
+        if let authService = authService {
+            bufferService?.configure(authService: authService)
+        }
 
         // If we have a smart processor, let it handle the buffer snapshots
         if let terminalProcessor = terminalProcessor, let bufferService = bufferService {

@@ -20,6 +20,7 @@ struct AppLogger {
         case network = "Network"
         case terminalBuffer = "TerminalBuffer"
         case terminalProcessor = "TerminalProcessor"
+        case auth = "Authentication"
         
         var logger: Logger {
             Logger(subsystem: AppLogger.subsystem, category: self.rawValue)
@@ -63,6 +64,9 @@ struct AppLogger {
 
     /// Logger for terminal processing
     static let terminalProcessor = Category.terminalProcessor.logger
+
+    /// Logger for authentication
+    static let auth = Category.auth.logger
 }
 
 // MARK: - Convenience Extensions

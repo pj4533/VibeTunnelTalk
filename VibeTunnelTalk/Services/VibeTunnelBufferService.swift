@@ -12,6 +12,12 @@ class VibeTunnelBufferService: ObservableObject {
 
     private var timer: Timer?
     private var sessionId: String?
+    private var authService: VibeTunnelAuthService?
+
+    /// Configure with authentication service
+    func configure(authService: VibeTunnelAuthService) {
+        self.authService = authService
+    }
 
     /// Start polling for buffer updates
     func startPolling(sessionId: String, interval: TimeInterval = 0.5) {
@@ -53,9 +59,12 @@ class VibeTunnelBufferService: ObservableObject {
     private func fetchBufferAsync(from url: URL) async {
         do {
             var request = URLRequest(url: url)
-            // Add local auth token header for VibeTunnel
-            // TODO: Get this token dynamically from the VibeTunnel process
-            request.setValue("vjU2sMOB59dW9KEn3U7fDiQCz_zbZihmLQ-ZIpnksEI", forHTTPHeaderField: "x-vibetunnel-local")
+
+            // Add JWT token if authentication is required
+            if let authService = authService,
+               let token = try? await authService.getToken() {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
 
             let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -63,7 +72,8 @@ class VibeTunnelBufferService: ObservableObject {
                 throw URLError(.badServerResponse)
             }
 
-            if httpResponse.statusCode == 200 {
+            switch httpResponse.statusCode {
+            case 200:
                 // Check content type
                 let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
 
@@ -80,7 +90,20 @@ class VibeTunnelBufferService: ObservableObject {
                     self.currentBuffer = snapshot
                     self.error = nil
                 }
-            } else {
+
+            case 401:
+                // Authentication failed, token might be expired
+                logger.error("[BUFFER-SERVICE] Authentication failed (401)")
+                if let authService = authService {
+                    // Mark as not authenticated
+                    await MainActor.run {
+                        authService.isAuthenticated = false
+                        authService.authError = .tokenExpired
+                    }
+                }
+                self.error = VibeTunnelAuthService.AuthError.tokenExpired
+
+            default:
                 logger.error("[BUFFER-SERVICE] HTTP error: \(httpResponse.statusCode)")
             }
         } catch {

@@ -21,12 +21,32 @@ struct SessionSelectionView: View {
                     Text("No VibeTunnel sessions found")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
-                    
-                    Text("Start a session with: vt claude")
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("To use VibeTunnelTalk, you need:")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+
+                        Label("VibeTunnel macOS app running", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundColor(.green)
+
+                        Label("Active Claude session", systemImage: "xmark.circle.fill")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                    .padding()
+                    .background(Color.gray.opacity(0.1))
+                    .cornerRadius(8)
+
+                    Text("Start a session with:")
                         .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Text("vt claude")
                         .font(.system(.body, design: .monospaced))
                         .padding(8)
-                        .background(Color.gray.opacity(0.1))
+                        .background(Color.blue.opacity(0.1))
                         .cornerRadius(4)
                 }
             } else {
