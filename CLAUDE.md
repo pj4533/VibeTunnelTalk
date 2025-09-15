@@ -80,6 +80,8 @@ The application follows a simplified polling-based architecture that leverages V
 
 ### VibeTunnel Integration
 
+**IMPORTANT**: For all information about VibeTunnel architecture, authentication, and integration details, refer to `docs/vibetunnel_architecture.md`. This is where you should look for all information about VibeTunnel. Anything you can't find in this architecture document, you can find in the actual VibeTunnel code.
+
 **VibeTunnel Source Code Locations**:
 - Web/Server: `~/Developer/vibetunnel`
 - iOS/Swift: `~/Developer/vibetunnel/ios` (Contains Swift implementations for terminal buffer handling, models, and rendering)
