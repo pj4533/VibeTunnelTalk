@@ -214,6 +214,11 @@ class VibeTunnelAuthService: ObservableObject {
                     logger.warning("[AUTH] Failed to save JWT token to Keychain")
                 }
 
+                // Store password in Keychain for token refresh
+                if !KeychainHelper.savePassword(password, for: username) {
+                    logger.warning("[AUTH] Failed to save password to Keychain for token refresh")
+                }
+
                 // Store username for future sessions
                 UserDefaults.standard.set(username, forKey: "lastUsername")
 
@@ -273,6 +278,35 @@ class VibeTunnelAuthService: ObservableObject {
         throw AuthError.tokenExpired
     }
 
+    /// Attempt to refresh the authentication token
+    /// Returns true if refresh was successful
+    @MainActor
+    func refreshToken() async -> Bool {
+        logger.info("[AUTH] Attempting to refresh authentication token...")
+
+        // Try to load saved credentials and re-authenticate
+        guard let savedToken = KeychainHelper.loadJWTToken(),
+              let savedUsername = UserDefaults.standard.string(forKey: "lastUsername") else {
+            logger.warning("[AUTH] No saved credentials available for token refresh")
+            return false
+        }
+
+        // Try to load saved password from Keychain if available
+        if let password = KeychainHelper.loadPassword(for: savedUsername) {
+            do {
+                try await authenticate(username: savedUsername, password: password)
+                logger.info("[AUTH] Successfully refreshed authentication token")
+                return true
+            } catch {
+                logger.error("[AUTH] Failed to refresh token: \(error.localizedDescription)")
+            }
+        }
+
+        // If we can't refresh automatically, mark as not authenticated
+        // The user will need to log in manually
+        return false
+    }
+
     /// Check if token is expired
     func isTokenExpired() -> Bool {
         guard let expiration = tokenExpirationDate else {
@@ -322,9 +356,10 @@ class VibeTunnelAuthService: ObservableObject {
     }
 }
 
-// Extend KeychainHelper to handle JWT tokens
+// Extend KeychainHelper to handle JWT tokens and passwords
 extension KeychainHelper {
     private static let jwtTokenKey = "VibeTunnelJWTToken"
+    private static let passwordKeyPrefix = "VibeTunnelPassword_"
 
     static func saveJWTToken(_ token: String) -> Bool {
         let data = token.data(using: .utf8)!
@@ -366,6 +401,57 @@ extension KeychainHelper {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: jwtTokenKey
+        ]
+
+        SecItemDelete(query as CFDictionary)
+    }
+
+    // Password management methods
+    static func savePassword(_ password: String, for username: String) -> Bool {
+        let data = password.data(using: .utf8)!
+        let account = "\(passwordKeyPrefix)\(username)"
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data
+        ]
+
+        // Delete any existing item
+        SecItemDelete(query as CFDictionary)
+
+        // Add new item
+        let status = SecItemAdd(query as CFDictionary, nil)
+        return status == errSecSuccess
+    }
+
+    static func loadPassword(for username: String) -> String? {
+        let account = "\(passwordKeyPrefix)\(username)"
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let password = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+
+        return password
+    }
+
+    static func deletePassword(for username: String) {
+        let account = "\(passwordKeyPrefix)\(username)"
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: account
         ]
 
         SecItemDelete(query as CFDictionary)
