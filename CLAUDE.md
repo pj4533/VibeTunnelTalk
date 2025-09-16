@@ -89,6 +89,11 @@ The application follows a simplified polling-based architecture that leverages V
 - Web/Server: `~/Developer/vibetunnel`
 - iOS/Swift: `~/Developer/vibetunnel/ios` (Contains Swift implementations for terminal buffer handling, models, and rendering)
 
+**IMPORTANT**: When troubleshooting VibeTunnel integration issues, ALWAYS check the iOS implementation at `~/Developer/vibetunnel/ios` as it provides working Swift code that maps directly to our macOS implementations. Key files to reference:
+- `BufferWebSocketClient.swift` - WebSocket client implementation
+- `WebSocketProtocol.swift` - WebSocket connection patterns
+- Terminal buffer decoding and handling patterns
+
 The app communicates with VibeTunnel sessions using two mechanisms:
 
 #### 1. IPC Socket (Control Commands)

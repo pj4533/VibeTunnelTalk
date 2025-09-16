@@ -111,10 +111,11 @@ extension SmartTerminalProcessor {
 
     /// Start processing with WebSocket client instead of polling
     func startProcessingWithWebSocket(webSocketClient: VibeTunnelWebSocketClient, sessionId: String) async {
-        logger.info("[PROCESSOR] Starting WebSocket-based terminal processing for session: \(sessionId)")
+        logger.info("[PROCESSOR] startProcessingWithWebSocket called for session: \(sessionId)")
 
         // Create debug file for this session
         createDebugFile()
+        logger.info("[PROCESSOR] Debug file created")
 
         // Create accumulator with thresholds
         let accumulator = BufferAccumulator(
@@ -125,16 +126,25 @@ extension SmartTerminalProcessor {
             self?.lastSentContent = content
         }
 
+        logger.info("[PROCESSOR] Subscribing to WebSocket updates for session: \(sessionId)")
+
         // Subscribe to WebSocket buffer updates
         await webSocketClient.subscribe(to: sessionId) { [weak self] snapshot in
-            guard let self = self else { return }
+            guard let self = self else {
+                AppLogger.terminalProcessor.warning("[PROCESSOR] Received snapshot but self is nil")
+                return
+            }
+
+            AppLogger.terminalProcessor.info("[PROCESSOR] Received buffer snapshot from WebSocket")
 
             Task { @MainActor in
                 self.processWebSocketSnapshot(snapshot, accumulator: accumulator)
             }
         }
 
+        logger.info("[PROCESSOR] WebSocket subscription completed")
         isProcessing = true
+        logger.info("[PROCESSOR] Processing started (isProcessing = true)")
 
         // Store accumulator reference
         self.currentAccumulator = accumulator
@@ -170,7 +180,7 @@ extension SmartTerminalProcessor {
 
     /// Stop WebSocket processing
     func stopWebSocketProcessing(webSocketClient: VibeTunnelWebSocketClient) async {
-        logger.info("[PROCESSOR] Stopping WebSocket-based terminal processing")
+        logger.info("[PROCESSOR] stopWebSocketProcessing called")
 
         // Unsubscribe from WebSocket
         await webSocketClient.unsubscribe()

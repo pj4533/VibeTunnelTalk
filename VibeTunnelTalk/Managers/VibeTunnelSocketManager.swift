@@ -44,8 +44,12 @@ class VibeTunnelSocketManager: ObservableObject {
     func connect(to sessionId: String) {
         logger.info("[VIBETUNNEL] Attempting to connect to session: \(sessionId)")
 
-        // Disconnect existing connection but preserve the new sessionId
-        disconnectInternal(clearSessionId: false)
+        // Only disconnect if we're connecting to a different session
+        if currentSessionId != nil && currentSessionId != sessionId {
+            logger.info("[VIBETUNNEL] Disconnecting from previous session: \(self.currentSessionId ?? "")")
+            // Disconnect existing connection but preserve the new sessionId
+            disconnectInternal(clearSessionId: false)
+        }
 
         // Store session ID
         currentSessionId = sessionId
@@ -159,40 +163,72 @@ class VibeTunnelSocketManager: ObservableObject {
     // MARK: - WebSocket Management
 
     private func startBufferService(sessionId: String) {
+        logger.info("[VIBETUNNEL-WEBSOCKET] startBufferService called for session: \(sessionId)")
+
         // Create WebSocket client for real-time terminal snapshots
         webSocketClient = VibeTunnelWebSocketClient()
+        logger.info("[VIBETUNNEL-WEBSOCKET] Created WebSocket client instance")
 
         // Configure WebSocket client with auth service if available
         if let authService = authService {
+            logger.info("[VIBETUNNEL-WEBSOCKET] Configuring WebSocket client with auth service")
             webSocketClient?.configure(authService: authService)
+        } else {
+            logger.warning("[VIBETUNNEL-WEBSOCKET] No auth service available for WebSocket client")
         }
+
+        // Store a strong reference to the WebSocket client
+        let client = webSocketClient
 
         // Start WebSocket connection
         Task {
-            await webSocketClient?.connect()
+            logger.info("[VIBETUNNEL-WEBSOCKET] Starting async task for WebSocket connection")
+
+            // Connect WebSocket
+            await client?.connect()
+            logger.info("[VIBETUNNEL-WEBSOCKET] WebSocket connect() completed")
+
+            // Double-check that we haven't been stopped in the meantime
+            guard self.webSocketClient != nil else {
+                logger.warning("[VIBETUNNEL-WEBSOCKET] WebSocket client was nil after connect, likely stopped during connection")
+                return
+            }
 
             // If we have a smart processor, let it handle the WebSocket updates
-            if let terminalProcessor = terminalProcessor, let webSocketClient = webSocketClient {
+            if let terminalProcessor = terminalProcessor, let webSocketClient = self.webSocketClient {
+                logger.info("[VIBETUNNEL-WEBSOCKET] Starting smart processor with WebSocket client")
                 await terminalProcessor.startProcessingWithWebSocket(webSocketClient: webSocketClient, sessionId: sessionId)
+                logger.info("[VIBETUNNEL-WEBSOCKET] Smart processor configured with WebSocket")
+            } else {
+                logger.warning("[VIBETUNNEL-WEBSOCKET] Missing terminal processor or WebSocket client")
             }
         }
 
-        logger.info("[VIBETUNNEL-WEBSOCKET] Started WebSocket client for session: \(sessionId)")
+        logger.info("[VIBETUNNEL-WEBSOCKET] startBufferService completed for session: \(sessionId)")
     }
 
     private func stopBufferService() {
+        logger.info("[VIBETUNNEL-WEBSOCKET] stopBufferService called")
+
+        // Capture reference to current webSocketClient before clearing it
+        let currentWebSocketClient = webSocketClient
+        webSocketClient = nil  // Clear reference immediately to prevent race conditions
+
         // Stop the smart processor if it's running
         Task {
-            if let terminalProcessor = terminalProcessor, let webSocketClient = webSocketClient {
-                await terminalProcessor.stopWebSocketProcessing(webSocketClient: webSocketClient)
+            if let terminalProcessor = terminalProcessor, let client = currentWebSocketClient {
+                logger.info("[VIBETUNNEL-WEBSOCKET] Stopping WebSocket processing in terminal processor")
+                await terminalProcessor.stopWebSocketProcessing(webSocketClient: client)
             }
 
             // Disconnect WebSocket
-            webSocketClient?.disconnect()
-            webSocketClient = nil
+            if let client = currentWebSocketClient {
+                logger.info("[VIBETUNNEL-WEBSOCKET] Disconnecting WebSocket client")
+                client.disconnect()
+            }
         }
 
-        logger.info("[VIBETUNNEL-WEBSOCKET] Stopped WebSocket client")
+        logger.info("[VIBETUNNEL-WEBSOCKET] stopBufferService completed")
     }
 }
 

@@ -39,7 +39,10 @@ class VibeTunnelWebSocketClient: NSObject {
         super.init()
         // Create URLSession with delegate
         let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 30.0
+        configuration.timeoutIntervalForResource = 300.0
         self.urlSession = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        logger.info("[WS-CLIENT] VibeTunnelWebSocketClient initialized")
     }
 
     /// Configure with authentication service
@@ -49,6 +52,8 @@ class VibeTunnelWebSocketClient: NSObject {
 
     /// Connect to VibeTunnel WebSocket endpoint
     func connect() async {
+        logger.info("[WS-CLIENT] connect() called")
+
         guard !isConnecting else {
             logger.warning("[WS-CLIENT] Already connecting, ignoring connect() call")
             return
@@ -58,6 +63,7 @@ class VibeTunnelWebSocketClient: NSObject {
             return
         }
 
+        logger.info("[WS-CLIENT] Starting connection process...")
         isConnecting = true
         connectionError = nil
 
@@ -69,19 +75,31 @@ class VibeTunnelWebSocketClient: NSObject {
         components.path = "/buffers"
 
         // Add authentication token as query parameter
-        if let token = try? await authService?.getToken() {
-            components.queryItems = [URLQueryItem(name: "token", value: token)]
-            logger.debug("[WS-CLIENT] Added auth token to WebSocket URL")
+        if let authService = authService {
+            logger.info("[WS-CLIENT] Auth service available, attempting to get token...")
+            if let token = try? await authService.getToken() {
+                components.queryItems = [URLQueryItem(name: "token", value: token)]
+                logger.info("[WS-CLIENT] Successfully added auth token to WebSocket URL")
+            } else {
+                logger.warning("[WS-CLIENT] Failed to get auth token")
+            }
+        } else {
+            logger.warning("[WS-CLIENT] No auth service configured")
         }
 
         guard let url = components.url else {
-            logger.error("[WS-CLIENT] Failed to construct WebSocket URL")
+            logger.error("[WS-CLIENT] Failed to construct WebSocket URL from components: \(components)")
             connectionError = URLError(.badURL)
             isConnecting = false
             return
         }
 
-        logger.info("[WS-CLIENT] Connecting to \(url.absoluteString)")
+        logger.info("[WS-CLIENT] WebSocket URL: \(url.absoluteString)")
+        logger.info("[WS-CLIENT] URL scheme: \(components.scheme ?? "nil")")
+        logger.info("[WS-CLIENT] URL host: \(components.host ?? "nil")")
+        logger.info("[WS-CLIENT] URL port: \(components.port?.description ?? "nil")")
+        logger.info("[WS-CLIENT] URL path: \(components.path)")
+        logger.info("[WS-CLIENT] Creating URLRequest with timeout: 10.0 seconds")
 
         // Create WebSocket task
         var request = URLRequest(url: url)
@@ -93,25 +111,53 @@ class VibeTunnelWebSocketClient: NSObject {
         }
 
         webSocketTask = urlSession?.webSocketTask(with: request)
-        webSocketTask?.resume()
 
+        guard let task = webSocketTask else {
+            logger.error("[WS-CLIENT] Failed to create webSocketTask")
+            isConnecting = false
+            connectionError = URLError(.cannotConnectToHost)
+            return
+        }
+
+        logger.info("[WS-CLIENT] WebSocket task created, resuming...")
+        task.resume()
+
+        // Log task state
+        logger.info("[WS-CLIENT] Task state after resume: \(task.state.rawValue)")
+
+        logger.info("[WS-CLIENT] Starting message receive loop...")
         // Start receiving messages
         receiveMessage()
 
-        // Consider connected once the task is resumed
-        await MainActor.run {
-            self.isConnected = true
-            self.isConnecting = false
-            self.reconnectAttempts = 0
-            self.logger.info("[WS-CLIENT] WebSocket connected")
-        }
+        // Send initial ping to verify connection (iOS pattern)
+        logger.info("[WS-CLIENT] Sending initial ping to verify connection...")
+        do {
+            try await sendInitialPing()
 
-        // Start ping task for keepalive
-        startPingTask()
+            // Connection successful!
+            await MainActor.run {
+                self.isConnected = true
+                self.isConnecting = false
+                self.reconnectAttempts = 0
+                self.logger.info("[WS-CLIENT] ✅ WebSocket connected successfully (ping succeeded)")
+            }
 
-        // Re-subscribe if we have a session
-        if let sessionId = subscribedSessionId {
-            await subscribe(to: sessionId)
+            // Start ping task for keepalive
+            startPingTask()
+            logger.info("[WS-CLIENT] Started ping task")
+
+            // Re-subscribe if we have a session
+            if let sessionId = subscribedSessionId {
+                logger.info("[WS-CLIENT] Re-subscribing to session: \(sessionId)")
+                await subscribe(to: sessionId)
+            }
+        } catch {
+            logger.error("[WS-CLIENT] ❌ Initial ping failed: \(error.localizedDescription)")
+            await MainActor.run {
+                self.isConnecting = false
+                self.connectionError = error
+                self.handleDisconnection(error: error)
+            }
         }
     }
 
@@ -136,12 +182,16 @@ class VibeTunnelWebSocketClient: NSObject {
 
     /// Subscribe to a session for buffer updates
     func subscribe(to sessionId: String, handler: @escaping (BufferSnapshot) -> Void) async {
+        logger.info("[WS-CLIENT] subscribe() called for session: \(sessionId)")
         self.subscribedSessionId = sessionId
         self.bufferHandler = handler
 
         // Send subscription message if connected
         if isConnected {
+            logger.info("[WS-CLIENT] Already connected, sending subscription immediately")
             await subscribe(to: sessionId)
+        } else {
+            logger.info("[WS-CLIENT] Not yet connected, will subscribe after connection")
         }
     }
 
@@ -162,9 +212,10 @@ class VibeTunnelWebSocketClient: NSObject {
 
     /// Send subscription message
     private func subscribe(to sessionId: String) async {
+        logger.info("[WS-CLIENT] Sending subscription message for session: \(sessionId)")
         let message = ["type": "subscribe", "sessionId": sessionId]
         await sendJSON(message)
-        logger.info("[WS-CLIENT] Sent subscription for session: \(sessionId)")
+        logger.info("[WS-CLIENT] ✅ Subscription message sent for session: \(sessionId)")
     }
 
     /// Send unsubscription message
@@ -197,11 +248,18 @@ class VibeTunnelWebSocketClient: NSObject {
 
     /// Receive messages from WebSocket
     private func receiveMessage() {
-        webSocketTask?.receive { [weak self] result in
+        guard let task = webSocketTask else {
+            logger.warning("[WS-CLIENT] receiveMessage() called but webSocketTask is nil")
+            return
+        }
+
+        logger.debug("[WS-CLIENT] Waiting for next message...")
+        task.receive { [weak self] result in
             guard let self = self else { return }
 
             switch result {
             case .success(let message):
+                self.logger.info("[WS-CLIENT] Received message successfully")
                 Task { @MainActor in
                     await self.handleMessage(message)
                     // Continue receiving
@@ -222,9 +280,11 @@ class VibeTunnelWebSocketClient: NSObject {
     private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
         switch message {
         case .data(let data):
+            logger.info("[WS-CLIENT] Received binary message: \(data.count) bytes")
             handleBinaryMessage(data)
 
         case .string(let text):
+            logger.info("[WS-CLIENT] Received text message: \(text.prefix(100))...")
             handleTextMessage(text)
 
         @unknown default:
@@ -596,6 +656,23 @@ class VibeTunnelWebSocketClient: NSObject {
         pingTask = nil
     }
 
+    /// Send initial ping to verify connection
+    private func sendInitialPing() async throws {
+        guard let webSocketTask = webSocketTask else {
+            throw URLError(.cannotConnectToHost)
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            webSocketTask.sendPing { error in
+                if let error = error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
     /// Send ping to server
     private func sendPing() async {
         guard let webSocketTask = webSocketTask else { return }
@@ -661,21 +738,28 @@ class VibeTunnelWebSocketClient: NSObject {
 
 // MARK: - URLSessionWebSocketDelegate
 
-extension VibeTunnelWebSocketClient: URLSessionWebSocketDelegate {
+extension VibeTunnelWebSocketClient: URLSessionWebSocketDelegate, URLSessionDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        Task { @MainActor in
-            logger.info("[WS-CLIENT] WebSocket connection opened with protocol: \(`protocol` ?? "none")")
-            isConnected = true
-            isConnecting = false
-            reconnectAttempts = 0
-        }
+        // This is called by URLSession, but we handle connection in connect() method
+        // using the ping pattern from iOS VibeTunnel
+        logger.info("[WS-CLIENT] URLSession delegate: didOpen with protocol: \(`protocol` ?? "none")")
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         Task { @MainActor in
             let reasonString = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "none"
-            logger.info("[WS-CLIENT] WebSocket closed with code: \(closeCode.rawValue), reason: \(reasonString)")
+            logger.warning("[WS-CLIENT] ⚠️ WebSocket delegate: didClose with code: \(closeCode.rawValue), reason: \(reasonString)")
             handleDisconnection()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            Task { @MainActor in
+                logger.error("[WS-CLIENT] ❌ URLSession task failed with error: \(error.localizedDescription)")
+                connectionError = error
+                handleDisconnection(error: error)
+            }
         }
     }
 }
