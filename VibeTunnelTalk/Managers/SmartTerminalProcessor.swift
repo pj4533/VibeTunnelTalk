@@ -54,14 +54,9 @@ class SmartTerminalProcessor: ObservableObject {
         // Subscribe to buffer updates
         bufferSubscription = bufferService.$currentBuffer
             .compactMap { $0 } // Filter out nil values
-            .removeDuplicates { prev, current in
-                // Only process if the buffer content has actually changed
-                let equal = self.areBuffersEqual(prev, current)
-                if equal {
-                    self.logger.debug("[PROCESSOR] Skipping duplicate buffer")
-                }
-                return equal
-            }
+            // Removed duplicate detection - we want to process every buffer
+            // to catch all changes, even small ones. The delta extraction
+            // will handle identifying what actually changed.
             .sink { [weak self] snapshot in
                 self?.logger.debug("[PROCESSOR] Received buffer snapshot from publisher")
                 self?.processBufferSnapshot(snapshot)
@@ -211,24 +206,6 @@ class SmartTerminalProcessor: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
-    /// Check if two buffers are effectively equal
-    private func areBuffersEqual(_ buffer1: BufferSnapshot, _ buffer2: BufferSnapshot) -> Bool {
-        // Quick dimension check
-        if buffer1.cols != buffer2.cols || buffer1.rows != buffer2.rows {
-            return false
-        }
-
-        // Check if cursor position changed significantly
-        if abs(buffer1.cursorX - buffer2.cursorX) > 5 || abs(buffer1.cursorY - buffer2.cursorY) > 2 {
-            return false
-        }
-
-        // Compare actual content
-        let content1 = extractTextFromBuffer(buffer1)
-        let content2 = extractTextFromBuffer(buffer2)
-
-        return content1 == content2
-    }
 
     /// Count the number of character changes between two strings
     private func countChanges(from old: String, to new: String) -> Int {
