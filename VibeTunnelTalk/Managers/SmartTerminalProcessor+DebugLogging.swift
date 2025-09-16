@@ -61,14 +61,19 @@ extension SmartTerminalProcessor {
         // Get buffer processing stats
         let bufferStats = getBufferProcessingStats()
 
+        // Check if this is a combined update
+        let isCombined = content.contains("---")
+        let updateType = isCombined ? "COMBINED UPDATE" : "Update"
+
         let entry = """
 
-        [\(timestamp)] - Update #\(totalUpdatesSent)
+        [\(timestamp)] - \(updateType) #\(totalUpdatesSent)
         ----------------------------------------
         Snapshots processed: \(totalSnapshotsProcessed)
         Data reduction: \(String(format: "%.1f%%", dataReductionRatio * 100))
         Characters sent: \(content.count)
         Buffer stats: \(bufferStats)
+        Accumulated pending: \(accumulatedChangeCount) chars
         ----------------------------------------
         CONTENT SENT TO OPENAI:
         \(content)
@@ -100,6 +105,11 @@ extension SmartTerminalProcessor {
                 }
             }
             stats.append("non_empty_cells=\(nonEmptyCells)")
+
+            // Add accumulation stats
+            if !accumulatedChanges.isEmpty {
+                stats.append("accumulated_updates=\(accumulatedChanges.count)")
+            }
         } else {
             stats.append("buffer=none")
         }

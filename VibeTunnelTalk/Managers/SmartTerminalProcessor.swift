@@ -25,6 +25,12 @@ class SmartTerminalProcessor: ObservableObject {
     private var lastSentContent = ""
     internal var lastBufferSnapshot: BufferSnapshot?
 
+    // Accumulation for small changes
+    internal var accumulatedChanges: [String] = []
+    internal var accumulatedChangeCount = 0
+    private var lastAccumulationTime = Date()
+    private let maxAccumulationInterval: TimeInterval = 5.0 // Max time to hold accumulated changes
+
     // Subscriptions
     private var bufferSubscription: AnyCancellable?
 
@@ -68,6 +74,15 @@ class SmartTerminalProcessor: ObservableObject {
     func stopProcessing() {
         logger.info("[PROCESSOR] Stopping smart terminal processing")
 
+        // Flush any accumulated changes before stopping
+        if !accumulatedChanges.isEmpty {
+            let combinedContent = accumulatedChanges.joined(separator: "\n---\n")
+            logger.info("[PROCESSOR] Flushing \(self.accumulatedChangeCount) accumulated chars on stop")
+            sendUpdateToOpenAI(combinedContent, changeCount: accumulatedChangeCount)
+            accumulatedChanges.removeAll()
+            accumulatedChangeCount = 0
+        }
+
         bufferSubscription?.cancel()
         bufferSubscription = nil
         bufferService = nil
@@ -107,14 +122,63 @@ class SmartTerminalProcessor: ObservableObject {
             logger.debug("[PROCESSOR] Snapshot #\(self.totalSnapshotsProcessed): \(changeCount) chars changed")
         }
 
-        // Only send update if changes exceed threshold
+        // Handle changes based on threshold
         if changeCount >= minChangeThreshold {
-            sendUpdateToOpenAI(currentContent, changeCount: changeCount)
+            // Send current changes plus any accumulated ones
+            if !accumulatedChanges.isEmpty {
+                // Combine accumulated changes with current
+                let allChanges = accumulatedChanges + [currentContent]
+                let combinedContent = allChanges.joined(separator: "\n---\n")
+                let totalChangeCount = accumulatedChangeCount + changeCount
+
+                logger.info("[PROCESSOR] Sending combined update: \(totalChangeCount) total chars (\(self.accumulatedChangeCount) accumulated + \(changeCount) current)")
+                sendUpdateToOpenAI(combinedContent, changeCount: totalChangeCount)
+
+                // Reset accumulator
+                accumulatedChanges.removeAll()
+                accumulatedChangeCount = 0
+            } else {
+                // Send just the current changes
+                sendUpdateToOpenAI(currentContent, changeCount: changeCount)
+            }
             lastSentContent = currentContent
+            lastAccumulationTime = Date()
         } else if changeCount > 0 {
-            // Log when we skip an update due to threshold
-            logger.debug("[PROCESSOR] Skipped update: \(changeCount) chars changed (below threshold of \(self.minChangeThreshold))")
-            writeSkippedUpdateToDebugFile(currentContent, changeCount: changeCount, reason: "Below threshold")
+            // Accumulate small changes
+            accumulatedChanges.append(currentContent)
+            accumulatedChangeCount += changeCount
+
+            logger.debug("[PROCESSOR] Accumulated \(changeCount) chars (total accumulated: \(self.accumulatedChangeCount))")
+
+            // Check if accumulated changes now exceed threshold
+            if accumulatedChangeCount >= minChangeThreshold {
+                let combinedContent = accumulatedChanges.joined(separator: "\n---\n")
+                logger.info("[PROCESSOR] Accumulated changes reached threshold: \(self.accumulatedChangeCount) chars")
+                sendUpdateToOpenAI(combinedContent, changeCount: accumulatedChangeCount)
+                lastSentContent = currentContent
+
+                // Reset accumulator
+                accumulatedChanges.removeAll()
+                accumulatedChangeCount = 0
+                lastAccumulationTime = Date()
+            } else {
+                // Check if we should flush based on time
+                let timeSinceLastAccumulation = Date().timeIntervalSince(lastAccumulationTime)
+                if timeSinceLastAccumulation > maxAccumulationInterval && !accumulatedChanges.isEmpty {
+                    let combinedContent = accumulatedChanges.joined(separator: "\n---\n")
+                    logger.info("[PROCESSOR] Flushing accumulated changes due to timeout: \(self.accumulatedChangeCount) chars after \(String(format: "%.1f", timeSinceLastAccumulation))s")
+                    sendUpdateToOpenAI(combinedContent, changeCount: accumulatedChangeCount)
+                    lastSentContent = currentContent
+
+                    // Reset accumulator
+                    accumulatedChanges.removeAll()
+                    accumulatedChangeCount = 0
+                    lastAccumulationTime = Date()
+                } else {
+                    logger.debug("[PROCESSOR] Waiting for more changes (accumulated: \(self.accumulatedChangeCount)/\(self.minChangeThreshold))")
+                    writeSkippedUpdateToDebugFile(currentContent, changeCount: changeCount, reason: "Accumulating (\(accumulatedChangeCount)/\(minChangeThreshold))")
+                }
+            }
         }
 
         lastBufferSnapshot = snapshot
