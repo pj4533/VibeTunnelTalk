@@ -14,12 +14,6 @@ class VibeTunnelBufferService: ObservableObject {
     private var sessionId: String?
     private var authService: VibeTunnelAuthService?
 
-    // Retry logic properties
-    private var retryCount = 0
-    private var maxRetries = 3
-    private var lastAuthFailureTime: Date?
-    private var isRefreshingToken = false
-
     /// Configure with authentication service
     func configure(authService: VibeTunnelAuthService) {
         self.authService = authService
@@ -43,23 +37,6 @@ class VibeTunnelBufferService: ObservableObject {
     func stopPolling() {
         timer?.invalidate()
         timer = nil
-        // Reset retry state when stopping
-        retryCount = 0
-        isRefreshingToken = false
-        lastAuthFailureTime = nil
-    }
-
-    /// Calculate exponential backoff delay
-    private func calculateBackoffDelay(attempt: Int) -> TimeInterval {
-        // Base delay: 0.5 seconds
-        // Max delay: 8 seconds
-        // Formula: min(baseDelay * 2^(attempt-1), maxDelay)
-        let baseDelay: TimeInterval = 0.5
-        let maxDelay: TimeInterval = 8.0
-        let delay = min(baseDelay * pow(2.0, Double(attempt - 1)), maxDelay)
-        // Add jitter (0-25% of delay) to avoid thundering herd
-        let jitter = Double.random(in: 0...0.25) * delay
-        return delay + jitter
     }
 
     /// Fetch buffer snapshot from VibeTunnel API
@@ -87,6 +64,9 @@ class VibeTunnelBufferService: ObservableObject {
             if let authService = authService,
                let token = try? await authService.getToken() {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                logger.debug("[BUFFER-SERVICE] Added auth token to request")
+            } else {
+                logger.debug("[BUFFER-SERVICE] No auth token available")
             }
 
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -116,61 +96,17 @@ class VibeTunnelBufferService: ObservableObject {
 
             case 401:
                 // Authentication failed, token might be expired
-                logger.warning("[BUFFER-SERVICE] Received 401 - attempting to handle authentication issue")
+                logger.error("[BUFFER-SERVICE] Authentication failed (401) - token may be expired")
 
-                // Only attempt refresh if we're not already refreshing and haven't exceeded retry limit
-                if let authService = authService,
-                   !isRefreshingToken,
-                   retryCount < maxRetries {
+                // Stop polling to prevent loops
+                stopPolling()
 
-                    isRefreshingToken = true
-                    retryCount += 1
-
-                    // Calculate backoff delay
-                    let delay = calculateBackoffDelay(attempt: retryCount)
-                    logger.info("[BUFFER-SERVICE] Attempting token refresh after \(String(format: "%.2f", delay))s delay (attempt \(self.retryCount)/\(self.maxRetries))")
-
-                    // Wait with exponential backoff before retrying
-                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-
-                    // Attempt to refresh the token
-                    let refreshSuccess = await authService.refreshToken()
-
-                    if refreshSuccess {
-                        logger.info("[BUFFER-SERVICE] Token refresh successful, retrying request")
-                        // Reset retry count on successful refresh
-                        retryCount = 0
-                        isRefreshingToken = false
-
-                        // Retry the fetch with new token
-                        await fetchBufferAsync(from: url)
-                        return
-                    } else {
-                        logger.warning("[BUFFER-SERVICE] Token refresh failed")
+                // Mark as not authenticated so user can re-login
+                if let authService = authService {
+                    await MainActor.run {
+                        authService.isAuthenticated = false
+                        authService.authError = .tokenExpired
                     }
-
-                    isRefreshingToken = false
-                }
-
-                // If we've exhausted retries or refresh failed, then mark as not authenticated
-                if retryCount >= maxRetries {
-                    logger.error("[BUFFER-SERVICE] Authentication failed after \(self.maxRetries) retry attempts")
-
-                    // Only invalidate authentication after multiple failures within a short time
-                    let now = Date()
-                    if let lastFailure = lastAuthFailureTime,
-                       now.timeIntervalSince(lastFailure) < 5.0 {
-                        // Multiple failures within 5 seconds, invalidate authentication
-                        if let authService = authService {
-                            await MainActor.run {
-                                authService.isAuthenticated = false
-                                authService.authError = .tokenExpired
-                            }
-                        }
-                        // Reset retry count for next session
-                        retryCount = 0
-                    }
-                    lastAuthFailureTime = now
                 }
 
                 self.error = VibeTunnelAuthService.AuthError.tokenExpired
