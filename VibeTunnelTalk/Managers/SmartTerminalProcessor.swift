@@ -22,7 +22,7 @@ class SmartTerminalProcessor: ObservableObject {
     @Published var dataReductionRatio: Double = 0.0
 
     // For diffing
-    private var lastSentContent = ""
+    internal var lastSentContent = ""
     internal var lastBufferSnapshot: BufferSnapshot?
 
     // Subscriptions
@@ -30,6 +30,9 @@ class SmartTerminalProcessor: ObservableObject {
 
     // Debug file for OpenAI updates
     var debugFileHandle: FileHandle?
+
+    // WebSocket accumulator
+    var currentAccumulator: BufferAccumulator?
 
     init(openAIManager: OpenAIRealtimeManager) {
         self.openAIManager = openAIManager
@@ -122,7 +125,7 @@ class SmartTerminalProcessor: ObservableObject {
     }
 
     /// Extract text content from buffer snapshot
-    private func extractTextFromBuffer(_ snapshot: BufferSnapshot) -> String {
+    internal func extractTextFromBuffer(_ snapshot: BufferSnapshot) -> String {
         var lines: [String] = []
 
         for row in snapshot.cells {
@@ -162,7 +165,7 @@ class SmartTerminalProcessor: ObservableObject {
     }
 
     /// Count the number of character changes between two strings
-    private func countChanges(from old: String, to new: String) -> Int {
+    internal func countChanges(from old: String, to new: String) -> Int {
         // Simple character difference count
         if old.isEmpty { return new.count }
         if new.isEmpty { return old.count }
@@ -185,7 +188,7 @@ class SmartTerminalProcessor: ObservableObject {
     // MARK: - OpenAI Integration
 
     /// Send update to OpenAI
-    private func sendUpdateToOpenAI(_ content: String, changeCount: Int) {
+    internal func sendUpdateToOpenAI(_ content: String, changeCount: Int) {
         logger.info("[PROCESSOR] sendUpdateToOpenAI called with \(content.count) chars, \(changeCount) changed")
 
         guard !content.isEmpty else {

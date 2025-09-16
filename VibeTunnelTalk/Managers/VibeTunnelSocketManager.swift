@@ -13,8 +13,8 @@ class VibeTunnelSocketManager: ObservableObject {
     var receiveBuffer = Data()
     let queue = DispatchQueue(label: "vibetunnel.socket", qos: .userInitiated)
 
-    // Buffer service for fetching terminal snapshots
-    private var bufferService: VibeTunnelBufferService?
+    // WebSocket client for real-time terminal snapshots
+    private var webSocketClient: VibeTunnelWebSocketClient?
 
     // Smart terminal processor for intelligent data filtering
     private var terminalProcessor: SmartTerminalProcessor?
@@ -156,35 +156,43 @@ class VibeTunnelSocketManager: ObservableObject {
         })
     }
 
-    // MARK: - Buffer Service Management
+    // MARK: - WebSocket Management
 
     private func startBufferService(sessionId: String) {
-        // Create buffer service for fetching terminal snapshots
-        bufferService = VibeTunnelBufferService()
+        // Create WebSocket client for real-time terminal snapshots
+        webSocketClient = VibeTunnelWebSocketClient()
 
-        // Configure buffer service with auth service if available
+        // Configure WebSocket client with auth service if available
         if let authService = authService {
-            bufferService?.configure(authService: authService)
+            webSocketClient?.configure(authService: authService)
         }
 
-        // If we have a smart processor, let it handle the buffer snapshots
-        if let terminalProcessor = terminalProcessor, let bufferService = bufferService {
-            terminalProcessor.startProcessing(bufferService: bufferService, sessionId: sessionId)
+        // Start WebSocket connection
+        Task {
+            await webSocketClient?.connect()
+
+            // If we have a smart processor, let it handle the WebSocket updates
+            if let terminalProcessor = terminalProcessor, let webSocketClient = webSocketClient {
+                await terminalProcessor.startProcessingWithWebSocket(webSocketClient: webSocketClient, sessionId: sessionId)
+            }
         }
 
-        // Start polling for buffer updates
-        bufferService?.startPolling(sessionId: sessionId, interval: 0.5)
-        logger.info("[VIBETUNNEL-BUFFER] Started buffer service for session: \(sessionId)")
+        logger.info("[VIBETUNNEL-WEBSOCKET] Started WebSocket client for session: \(sessionId)")
     }
 
     private func stopBufferService() {
         // Stop the smart processor if it's running
-        terminalProcessor?.stopProcessing()
+        Task {
+            if let terminalProcessor = terminalProcessor, let webSocketClient = webSocketClient {
+                await terminalProcessor.stopWebSocketProcessing(webSocketClient: webSocketClient)
+            }
 
-        // Stop buffer polling
-        bufferService?.stopPolling()
-        bufferService = nil
-        logger.info("[VIBETUNNEL-BUFFER] Stopped buffer service")
+            // Disconnect WebSocket
+            webSocketClient?.disconnect()
+            webSocketClient = nil
+        }
+
+        logger.info("[VIBETUNNEL-WEBSOCKET] Stopped WebSocket client")
     }
 }
 

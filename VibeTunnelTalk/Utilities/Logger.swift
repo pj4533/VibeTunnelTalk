@@ -21,6 +21,7 @@ struct AppLogger {
         case terminalBuffer = "TerminalBuffer"
         case terminalProcessor = "TerminalProcessor"
         case auth = "Authentication"
+        case webSocket = "WebSocket"
         
         var logger: Logger {
             Logger(subsystem: AppLogger.subsystem, category: self.rawValue)
@@ -67,6 +68,9 @@ struct AppLogger {
 
     /// Logger for authentication
     static let auth = Category.auth.logger
+
+    /// Logger for WebSocket operations
+    static let webSocket = Category.webSocket.logger
 }
 
 // MARK: - Convenience Extensions

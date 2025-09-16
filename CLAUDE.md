@@ -58,10 +58,13 @@ The application follows a simplified polling-based architecture that leverages V
    - Coordinates the buffer polling service lifecycle
    - Located at: `VibeTunnelTalk/Managers/VibeTunnelSocketManager.swift`
 
-2. **VibeTunnelBufferService**: Polls VibeTunnel's buffer API for terminal snapshots
-   - Fetches complete terminal state every 500ms
-   - Decodes both JSON and binary buffer formats
-   - Located at: `VibeTunnelTalk/Services/VibeTunnelBufferService.swift`
+2. **VibeTunnelWebSocketClient**: Real-time WebSocket connection for terminal buffer streaming
+   - Establishes WebSocket connection to VibeTunnel's `/buffers` endpoint
+   - Receives binary buffer updates in real-time
+   - Implements automatic reconnection with exponential backoff
+   - Located at: `VibeTunnelTalk/Services/VibeTunnelWebSocketClient.swift`
+
+   Note: VibeTunnelBufferService (REST API polling) is deprecated but kept for TerminalBufferView compatibility
 
 3. **SmartTerminalProcessor**: Processes buffer snapshots for intelligent narration
    - Extracts plain text from buffer cell grid
@@ -131,7 +134,7 @@ A comprehensive implementation guide is available in `docs/VibeTunnelTalk_Implem
 
 3. **Audio Format**: OpenAI Realtime API expects 24kHz PCM16 mono audio
 
-4. **Buffer Polling**: The app polls VibeTunnel's buffer API every 500ms for terminal snapshots
+4. **Real-time Updates**: The app uses WebSocket for real-time terminal buffer updates with intelligent accumulation
 
 5. **No ANSI Parsing**: VibeTunnel handles all terminal emulation and ANSI escape sequence parsing server-side
 
