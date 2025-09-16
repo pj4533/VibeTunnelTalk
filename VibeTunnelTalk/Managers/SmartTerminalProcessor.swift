@@ -196,10 +196,10 @@ class SmartTerminalProcessor: ObservableObject {
             return
         }
 
-        // Don't send updates if OpenAI is currently speaking
-        guard !openAIManager.isSpeaking else {
-            logger.debug("[PROCESSOR] Skipping update - OpenAI is speaking")
-            return
+        // Log if OpenAI is speaking but still send the update
+        // OpenAI can handle concurrent updates
+        if openAIManager.isSpeaking {
+            logger.debug("[PROCESSOR] Note: OpenAI is currently speaking, but sending update anyway")
         }
 
         totalUpdatesSent += 1

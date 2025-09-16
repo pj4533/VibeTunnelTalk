@@ -33,23 +33,33 @@ extension SmartTerminalProcessor {
 
         /// Add a buffer snapshot to the accumulator
         func accumulate(_ snapshot: BufferSnapshot, extractedContent: String, changeCount: Int) {
-            logger.debug("[ACCUMULATOR] Accumulating \(changeCount) chars of changes")
+            logger.debug("[ACCUMULATOR] Accumulating \(changeCount) chars of changes (accumulated so far: \(self.accumulatedContent.isEmpty ? 0 : self.accumulatedContent.count) chars)")
+
+            // Skip if no actual changes
+            guard changeCount > 0 else {
+                logger.debug("[ACCUMULATOR] No changes to accumulate")
+                return
+            }
 
             // Add to pending snapshots
             pendingSnapshots.append(snapshot)
 
-            // Track the accumulated content changes
+            // Update to the latest content (not accumulate, as we want the latest state)
             accumulatedContent = extractedContent
 
-            // Check size threshold
+            // Start timer if not already running
+            if accumulationTimer == nil {
+                logger.debug("[ACCUMULATOR] Starting new accumulation timer")
+                resetTimer()
+            }
+
+            // Check size threshold based on total accumulated changes
+            // We check if enough has changed since we last sent to OpenAI
             if changeCount >= sizeThreshold {
                 logger.info("[ACCUMULATOR] Size threshold reached: \(changeCount) >= \(self.sizeThreshold)")
                 flush()
                 return
             }
-
-            // Start or reset timer for time threshold
-            resetTimer()
         }
 
         /// Flush accumulated data
@@ -122,8 +132,18 @@ extension SmartTerminalProcessor {
             sizeThreshold: 500,    // Send when 500+ chars accumulate
             timeThreshold: 2.0      // Send after 2 seconds of inactivity
         ) { [weak self] content, changeCount in
-            self?.sendUpdateToOpenAI(content, changeCount: changeCount)
-            self?.lastSentContent = content
+            guard let self = self else { return }
+
+            // Always update lastSentContent to track what we've processed
+            // even if we skip sending to OpenAI
+            let previousContent = self.lastSentContent
+            self.lastSentContent = content
+
+            // Only send if content actually changed from what we last tracked
+            let actualChangeCount = self.countChanges(from: previousContent, to: content)
+            if actualChangeCount > 0 {
+                self.sendUpdateToOpenAI(content, changeCount: actualChangeCount)
+            }
         }
 
         logger.info("[PROCESSOR] Subscribing to WebSocket updates for session: \(sessionId)")
@@ -166,13 +186,11 @@ extension SmartTerminalProcessor {
 
         // Log periodically to track processing
         if totalSnapshotsProcessed % 10 == 0 {
-            logger.debug("[PROCESSOR] WebSocket snapshot #\(self.totalSnapshotsProcessed): \(changeCount) chars changed")
+            logger.debug("[PROCESSOR] WebSocket snapshot #\(self.totalSnapshotsProcessed): \(changeCount) chars changed from lastSentContent")
         }
 
-        // Use accumulator to handle the update intelligently
-        if changeCount > 0 {
-            accumulator.accumulate(snapshot, extractedContent: currentContent, changeCount: changeCount)
-        }
+        // Always pass to accumulator - let it decide what to do
+        accumulator.accumulate(snapshot, extractedContent: currentContent, changeCount: changeCount)
 
         lastBufferSnapshot = snapshot
         lastUpdate = Date()
