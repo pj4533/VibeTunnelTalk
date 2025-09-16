@@ -107,8 +107,8 @@ extension SmartTerminalProcessor {
             stats.append("non_empty_cells=\(nonEmptyCells)")
 
             // Add accumulation stats
-            if !accumulatedChanges.isEmpty {
-                stats.append("accumulated_updates=\(accumulatedChanges.count)")
+            if !accumulatedDelta.isEmpty {
+                stats.append("accumulated_delta_size=\(accumulatedDelta.count)")
             }
         } else {
             stats.append("buffer=none")

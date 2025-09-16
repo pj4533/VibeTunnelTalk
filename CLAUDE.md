@@ -137,6 +137,8 @@ A comprehensive implementation guide is available in `docs/VibeTunnelTalk_Implem
 
 6. **Error Handling**: Implement reconnection logic for IPC socket, HTTP polling, and WebSocket connections
 
+7. **Debug Logs**: OpenAI updates and debug logs are written to `~/Library/Logs/VibeTunnelTalk/`. The most recent log file is named with a timestamp like `openai_updates_YYYYMMDD_HHMMSS.txt`
+
 ## Reference Implementation
 
 **OpenAI WebSocket Reference**: When troubleshooting WebSocket communication with OpenAI's Realtime API, refer to the reference implementation at `~/Developer/swift-realtime-openai`. This codebase provides:

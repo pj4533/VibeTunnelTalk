@@ -26,7 +26,7 @@ class SmartTerminalProcessor: ObservableObject {
     internal var lastBufferSnapshot: BufferSnapshot?
 
     // Accumulation for small changes
-    internal var accumulatedChanges: [String] = []
+    internal var accumulatedDelta = "" // Stores just the accumulated text changes
     internal var accumulatedChangeCount = 0
     private var lastAccumulationTime = Date()
     private let maxAccumulationInterval: TimeInterval = 5.0 // Max time to hold accumulated changes
@@ -75,11 +75,9 @@ class SmartTerminalProcessor: ObservableObject {
         logger.info("[PROCESSOR] Stopping smart terminal processing")
 
         // Flush any accumulated changes before stopping
-        if !accumulatedChanges.isEmpty {
-            let combinedContent = accumulatedChanges.joined(separator: "\n---\n")
-            logger.info("[PROCESSOR] Flushing \(self.accumulatedChangeCount) accumulated chars on stop")
-            sendUpdateToOpenAI(combinedContent, changeCount: accumulatedChangeCount)
-            accumulatedChanges.removeAll()
+        if accumulatedChangeCount > 0 {
+            logger.info("[PROCESSOR] Discarding \(self.accumulatedChangeCount) accumulated chars on stop")
+            accumulatedDelta = ""
             accumulatedChangeCount = 0
         }
 
@@ -124,54 +122,61 @@ class SmartTerminalProcessor: ObservableObject {
 
         // Handle changes based on threshold
         if changeCount >= minChangeThreshold {
-            // Send current changes plus any accumulated ones
-            if !accumulatedChanges.isEmpty {
-                // Combine accumulated changes with current
-                let allChanges = accumulatedChanges + [currentContent]
-                let combinedContent = allChanges.joined(separator: "\n---\n")
-                let totalChangeCount = accumulatedChangeCount + changeCount
+            // Send current content with any accumulated deltas
+            let totalChangeCount = accumulatedChangeCount + changeCount
 
+            if !accumulatedDelta.isEmpty {
+                // Combine current content with accumulated deltas
+                let combinedContent = currentContent + "\n\n[Previous changes: " + accumulatedDelta + "]"
                 logger.info("[PROCESSOR] Sending combined update: \(totalChangeCount) total chars (\(self.accumulatedChangeCount) accumulated + \(changeCount) current)")
                 sendUpdateToOpenAI(combinedContent, changeCount: totalChangeCount)
-
-                // Reset accumulator
-                accumulatedChanges.removeAll()
-                accumulatedChangeCount = 0
             } else {
-                // Send just the current changes
+                // Send just the current content
                 sendUpdateToOpenAI(currentContent, changeCount: changeCount)
             }
+
+            // Reset accumulator
+            accumulatedDelta = ""
+            accumulatedChangeCount = 0
             lastSentContent = currentContent
             lastAccumulationTime = Date()
         } else if changeCount > 0 {
-            // Accumulate small changes
-            accumulatedChanges.append(currentContent)
-            accumulatedChangeCount += changeCount
+            // Extract and accumulate just the delta
+            let delta = extractDelta(from: lastSentContent, to: currentContent)
+            if !delta.isEmpty {
+                if !accumulatedDelta.isEmpty {
+                    accumulatedDelta += " "  // Add space between deltas
+                }
+                accumulatedDelta += delta
+                accumulatedChangeCount += changeCount
 
-            logger.debug("[PROCESSOR] Accumulated \(changeCount) chars (total accumulated: \(self.accumulatedChangeCount))")
+                logger.debug("[PROCESSOR] Accumulated \(changeCount) chars (total accumulated: \(self.accumulatedChangeCount))")
+            }
 
             // Check if accumulated changes now exceed threshold
             if accumulatedChangeCount >= minChangeThreshold {
-                let combinedContent = accumulatedChanges.joined(separator: "\n---\n")
+                // Send current content with accumulated deltas
+                let combinedContent = currentContent + "\n\n[Previous changes: " + accumulatedDelta + "]"
                 logger.info("[PROCESSOR] Accumulated changes reached threshold: \(self.accumulatedChangeCount) chars")
                 sendUpdateToOpenAI(combinedContent, changeCount: accumulatedChangeCount)
                 lastSentContent = currentContent
 
                 // Reset accumulator
-                accumulatedChanges.removeAll()
+                accumulatedDelta = ""
                 accumulatedChangeCount = 0
                 lastAccumulationTime = Date()
             } else {
                 // Check if we should flush based on time
                 let timeSinceLastAccumulation = Date().timeIntervalSince(lastAccumulationTime)
-                if timeSinceLastAccumulation > maxAccumulationInterval && !accumulatedChanges.isEmpty {
-                    let combinedContent = accumulatedChanges.joined(separator: "\n---\n")
+                if timeSinceLastAccumulation > maxAccumulationInterval && !accumulatedDelta.isEmpty {
+                    // Send current content with accumulated deltas
+                    let combinedContent = currentContent + "\n\n[Previous changes: " + accumulatedDelta + "]"
                     logger.info("[PROCESSOR] Flushing accumulated changes due to timeout: \(self.accumulatedChangeCount) chars after \(String(format: "%.1f", timeSinceLastAccumulation))s")
                     sendUpdateToOpenAI(combinedContent, changeCount: accumulatedChangeCount)
                     lastSentContent = currentContent
 
                     // Reset accumulator
-                    accumulatedChanges.removeAll()
+                    accumulatedDelta = ""
                     accumulatedChangeCount = 0
                     lastAccumulationTime = Date()
                 } else {
@@ -244,6 +249,29 @@ class SmartTerminalProcessor: ObservableObject {
         let newChangedLength = new.count - commonPrefixLength - commonSuffixLength
 
         return max(oldChangedLength, newChangedLength)
+    }
+
+    /// Extract just the delta (changed content) between two strings
+    private func extractDelta(from old: String, to new: String) -> String {
+        if old.isEmpty { return new }
+        if new.isEmpty { return "[cleared]" }
+
+        // Find common prefix
+        let commonPrefixLength = zip(old, new).prefix(while: { $0 == $1 }).count
+
+        // Find common suffix
+        let oldSuffix = old.suffix(old.count - commonPrefixLength)
+        let newSuffix = new.suffix(new.count - commonPrefixLength)
+        let commonSuffixLength = zip(oldSuffix.reversed(), newSuffix.reversed()).prefix(while: { $0 == $1 }).count
+
+        // Extract the changed portion
+        let startIndex = new.index(new.startIndex, offsetBy: commonPrefixLength)
+        let endIndex = new.index(new.endIndex, offsetBy: -commonSuffixLength)
+
+        if startIndex < endIndex {
+            return String(new[startIndex..<endIndex])
+        }
+        return ""
     }
 
     // MARK: - OpenAI Integration
