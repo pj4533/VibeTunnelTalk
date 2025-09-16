@@ -209,9 +209,13 @@ class VibeTunnelAuthService: ObservableObject {
                 // Calculate expiration date (24 hours from now)
                 self.tokenExpirationDate = Date().addingTimeInterval(86400) // 24 hours
 
+                logger.info("[AUTH] Received JWT token: \(loginResponse.token.prefix(20))...")
+
                 // Store token in Keychain
-                if !KeychainHelper.saveJWTToken(loginResponse.token) {
-                    logger.warning("[AUTH] Failed to save JWT token to Keychain")
+                if KeychainHelper.saveJWTToken(loginResponse.token) {
+                    logger.info("[AUTH] JWT token saved to Keychain successfully")
+                } else {
+                    logger.error("[AUTH] Failed to save JWT token to Keychain")
                 }
 
                 // Store username for future sessions
@@ -250,27 +254,42 @@ class VibeTunnelAuthService: ObservableObject {
     func getToken() async throws -> String? {
         // Check if authentication is required
         if !(await checkAuthRequired()) {
+            logger.debug("[AUTH] No authentication required, returning nil token")
             return nil // No token needed
         }
 
-        // Check if we have a valid token
+        // Check if we have a valid token in memory
         if let token = jwtToken,
            let expiration = tokenExpirationDate,
            expiration > Date() {
+            logger.debug("[AUTH] Using valid token from memory (expires: \(expiration))")
             return token
         }
 
         // Try to load from Keychain
         if let token = KeychainHelper.loadJWTToken() {
+            logger.debug("[AUTH] Loaded token from Keychain")
             // We can't verify expiration without decoding the JWT
             // For now, just use it and handle 401 errors
             self.jwtToken = token
+            // Don't set expiration since we don't know when it expires
             return token
         }
 
         // No valid token available
+        logger.warning("[AUTH] No valid token available")
         isAuthenticated = false
         throw AuthError.tokenExpired
+    }
+
+    /// Attempt to refresh the authentication token
+    /// Returns true if refresh was successful
+    @MainActor
+    func refreshToken() async -> Bool {
+        logger.info("[AUTH] Token refresh requested but automatic refresh not available")
+        // We don't store passwords for security reasons, so can't auto-refresh
+        // User will need to re-authenticate manually
+        return false
     }
 
     /// Check if token is expired
@@ -324,50 +343,81 @@ class VibeTunnelAuthService: ObservableObject {
 
 // Extend KeychainHelper to handle JWT tokens
 extension KeychainHelper {
+    private static let jwtService = "com.vibetunneltalk.jwt"
     private static let jwtTokenKey = "VibeTunnelJWTToken"
 
     static func saveJWTToken(_ token: String) -> Bool {
-        let data = token.data(using: .utf8)!
+        // Clean the token: remove newlines and trim whitespace
+        let cleanedToken = token
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let data = cleanedToken.data(using: .utf8) else {
+            AppLogger.auth.error("[KEYCHAIN] Failed to convert token to data")
+            return false
+        }
+
+        // Delete any existing item first
+        deleteJWTToken()
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: jwtService,
             kSecAttrAccount as String: jwtTokenKey,
-            kSecValueData as String: data
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
         ]
 
-        // Delete any existing item
-        SecItemDelete(query as CFDictionary)
-
-        // Add new item
         let status = SecItemAdd(query as CFDictionary, nil)
-        return status == errSecSuccess
+
+        if status == errSecSuccess {
+            AppLogger.auth.info("[KEYCHAIN] JWT token saved successfully")
+            return true
+        } else {
+            AppLogger.auth.error("[KEYCHAIN] Failed to save JWT token: \(status)")
+            return false
+        }
     }
 
     static func loadJWTToken() -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: jwtService,
             kSecAttrAccount as String: jwtTokenKey,
-            kSecReturnData as String: true
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
         ]
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
 
-        guard status == errSecSuccess,
-              let data = result as? Data,
-              let token = String(data: data, encoding: .utf8) else {
-            return nil
+        if status == errSecSuccess,
+           let data = result as? Data,
+           let token = String(data: data, encoding: .utf8) {
+            AppLogger.auth.info("[KEYCHAIN] JWT token loaded successfully")
+            return token
+        } else if status == errSecItemNotFound {
+            AppLogger.auth.debug("[KEYCHAIN] No JWT token found in keychain")
+        } else {
+            AppLogger.auth.error("[KEYCHAIN] Failed to load JWT token: \(status)")
         }
 
-        return token
+        return nil
     }
 
     static func deleteJWTToken() {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: jwtService,
             kSecAttrAccount as String: jwtTokenKey
         ]
 
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        if status == errSecSuccess || status == errSecItemNotFound {
+            AppLogger.auth.debug("[KEYCHAIN] JWT token deleted or not found")
+        } else {
+            AppLogger.auth.error("[KEYCHAIN] Failed to delete JWT token: \(status)")
+        }
     }
 }

@@ -64,6 +64,9 @@ class VibeTunnelBufferService: ObservableObject {
             if let authService = authService,
                let token = try? await authService.getToken() {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                logger.debug("[BUFFER-SERVICE] Added auth token to request")
+            } else {
+                logger.debug("[BUFFER-SERVICE] No auth token available")
             }
 
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -93,14 +96,19 @@ class VibeTunnelBufferService: ObservableObject {
 
             case 401:
                 // Authentication failed, token might be expired
-                logger.error("[BUFFER-SERVICE] Authentication failed (401)")
+                logger.error("[BUFFER-SERVICE] Authentication failed (401) - token may be expired")
+
+                // Stop polling to prevent loops
+                stopPolling()
+
+                // Mark as not authenticated so user can re-login
                 if let authService = authService {
-                    // Mark as not authenticated
                     await MainActor.run {
                         authService.isAuthenticated = false
                         authService.authError = .tokenExpired
                     }
                 }
+
                 self.error = VibeTunnelAuthService.AuthError.tokenExpired
 
             default:
