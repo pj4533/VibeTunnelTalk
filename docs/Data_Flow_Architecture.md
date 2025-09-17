@@ -193,11 +193,13 @@ The complete data flow creates a continuous feedback loop:
    - Handles binary message decoding with magic byte validation
    - Manages session subscriptions and automatic reconnection
    - Publishes buffer updates to subscribers
+   - Implemented as shared singleton for unified connection management
 
-2. **VibeTunnelBufferService** (`Services/VibeTunnelBufferService.swift`)
-   - Legacy HTTP polling implementation (deprecated)
-   - Kept for compatibility with TerminalBufferView
-   - Being phased out in favor of WebSocket streaming
+2. **TerminalBufferViewModel** (`ViewModels/TerminalBufferViewModel.swift`)
+   - Bridges WebSocket buffer updates to SwiftUI views
+   - Subscribes to BufferWebSocketClient for real-time updates
+   - Manages @Published properties for reactive UI updates
+   - Handles connection state and error management
 
 3. **SmartTerminalProcessor** (`Managers/SmartTerminalProcessor.swift`)
    - Subscribes to WebSocket buffer updates

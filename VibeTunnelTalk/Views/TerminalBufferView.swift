@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Displays an accurate terminal buffer snapshot
+/// Displays an accurate terminal buffer snapshot using real-time WebSocket updates
 struct TerminalBufferView: View {
-    @StateObject private var bufferService = VibeTunnelBufferService()
+    @StateObject private var viewModel = TerminalBufferViewModel()
     let sessionId: String
     let fontSize: CGFloat
 
@@ -13,7 +13,7 @@ struct TerminalBufferView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let snapshot = bufferService.currentBuffer {
+            if let snapshot = viewModel.currentBuffer {
                 ScrollView([.horizontal, .vertical], showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(0..<snapshot.rows, id: \.self) { row in
@@ -28,11 +28,11 @@ struct TerminalBufferView: View {
                 }
                 .background(Color.black)
                 .foregroundColor(Color.green)
-            } else if bufferService.isLoading {
+            } else if viewModel.isLoading {
                 ProgressView("Loading terminal buffer...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color.black)
-            } else if bufferService.error != nil {
+            } else if viewModel.error != nil {
                 Text("Unable to load terminal buffer")
                     .foregroundColor(.red)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -46,10 +46,10 @@ struct TerminalBufferView: View {
         }
         .font(.system(size: fontSize, design: .monospaced))
         .onAppear {
-            bufferService.startPolling(sessionId: sessionId, interval: 0.5)
+            viewModel.startReceivingUpdates(for: sessionId)
         }
         .onDisappear {
-            bufferService.stopPolling()
+            viewModel.stopReceivingUpdates()
         }
     }
 
