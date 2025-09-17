@@ -3,6 +3,7 @@ import OSLog
 
 /// Accumulates terminal buffer updates intelligently before sending to OpenAI
 /// Handles both bursty data (lots of changes at once) and quiet periods (minimal changes over time)
+/// Maintains a complete session transcript to preserve context even when terminal clears
 class BufferAccumulator {
     private let logger = AppLogger.terminalProcessor
 
@@ -18,6 +19,10 @@ class BufferAccumulator {
     private var pendingSnapshots: [BufferSnapshot] = []
     private var totalAccumulatedChanges = 0
 
+    // Session transcript tracking
+    private var sessionTranscript = ""    // Complete history of all terminal content
+    private var lastTranscriptSnapshot = "" // Last known terminal state for detecting clears
+
     // Callback
     private let onThresholdReached: (String, Int) -> Void
 
@@ -32,6 +37,9 @@ class BufferAccumulator {
     /// Add a buffer snapshot to the accumulator
     func accumulate(_ snapshot: BufferSnapshot, extractedContent: String, changeCount: Int) {
         logger.debug("[ACCUMULATOR] Accumulating snapshot with \(changeCount) changed chars")
+
+        // Update session transcript intelligently
+        updateSessionTranscript(with: extractedContent)
 
         // Store the latest complete content (not incremental)
         accumulatedContent = extractedContent
@@ -52,6 +60,83 @@ class BufferAccumulator {
 
         // Check if we should flush based on thresholds
         checkThresholds()
+    }
+
+    /// Intelligently update the session transcript with new content
+    private func updateSessionTranscript(with newContent: String) {
+        // If this is the first content, just set it
+        if sessionTranscript.isEmpty {
+            sessionTranscript = newContent
+            lastTranscriptSnapshot = newContent
+            logger.debug("[ACCUMULATOR] Initialized session transcript with \(newContent.count) chars")
+            return
+        }
+
+        // Check if terminal was cleared (new content is significantly shorter or very different)
+        let wasCleared = detectTerminalClear(from: lastTranscriptSnapshot, to: newContent)
+
+        if wasCleared {
+            // Terminal was cleared - append old content to transcript before adding new
+            logger.info("[ACCUMULATOR] Terminal clear detected - preserving history")
+
+            // If transcript doesn't already end with the last snapshot, append it
+            if !sessionTranscript.hasSuffix(lastTranscriptSnapshot) {
+                sessionTranscript += "\n" + lastTranscriptSnapshot
+            }
+
+            // Add a marker to indicate terminal was cleared
+            sessionTranscript += "\n[Terminal Cleared]\n"
+
+            // Add the new content
+            sessionTranscript += newContent
+        } else {
+            // Normal update - find what's truly new and append only that
+            let newPortion = extractNewContent(from: lastTranscriptSnapshot, to: newContent)
+            if !newPortion.isEmpty {
+                sessionTranscript += newPortion
+                logger.debug("[ACCUMULATOR] Appended \(newPortion.count) new chars to transcript")
+            }
+        }
+
+        // Update our snapshot of the current terminal state
+        lastTranscriptSnapshot = newContent
+    }
+
+    /// Detect if terminal was cleared based on content comparison
+    private func detectTerminalClear(from old: String, to new: String) -> Bool {
+        // Terminal clear indicators:
+        // 1. New content is significantly shorter (>50% reduction)
+        // 2. Common prefix is very small relative to old content
+
+        if old.isEmpty { return false }
+
+        // Check for significant size reduction
+        let sizeReduction = Double(old.count - new.count) / Double(old.count)
+        if sizeReduction > 0.5 {
+            return true
+        }
+
+        // Check for minimal common prefix (terminal was cleared and rewritten)
+        let commonPrefix = zip(old, new).prefix(while: { $0 == $1 }).count
+        let prefixRatio = Double(commonPrefix) / Double(old.count)
+        if prefixRatio < 0.1 && new.count > 10 {  // Less than 10% common and new content exists
+            return true
+        }
+
+        return false
+    }
+
+    /// Extract only the new content that was added
+    private func extractNewContent(from old: String, to new: String) -> String {
+        // Find the longest common prefix
+        let commonPrefixLength = zip(old, new).prefix(while: { $0 == $1 }).count
+
+        // Everything after the common prefix is new
+        if commonPrefixLength < new.count {
+            return String(new.suffix(new.count - commonPrefixLength))
+        }
+
+        return ""
     }
 
     private func checkThresholds() {
@@ -130,8 +215,8 @@ class BufferAccumulator {
     }
 
     private func flush() {
-        guard !accumulatedContent.isEmpty else {
-            logger.debug("[ACCUMULATOR] Nothing to flush")
+        guard !sessionTranscript.isEmpty else {
+            logger.debug("[ACCUMULATOR] Nothing to flush - empty transcript")
             return
         }
 
@@ -144,19 +229,21 @@ class BufferAccumulator {
             return
         }
 
-        logger.info("[ACCUMULATOR] Flushing \(self.accumulatedContent.count) total chars with \(changeCount) changed chars")
+        logger.info("[ACCUMULATOR] Flushing session transcript: \(self.sessionTranscript.count) total chars (accumulated: \(self.accumulatedContent.count) chars, changed: \(changeCount) chars)")
 
-        // Send accumulated content
-        onThresholdReached(accumulatedContent, changeCount)
+        // Send the complete session transcript for full context
+        // This ensures OpenAI always has the complete history, even after terminal clears
+        onThresholdReached(sessionTranscript, changeCount)
 
         // Update last processed content
         lastProcessedContent = accumulatedContent
 
-        // Reset accumulation state
+        // Reset accumulation state (but preserve transcript)
         resetState()
     }
 
     private func resetState() {
+        // Clear temporary accumulation state
         accumulatedContent = ""
         pendingSnapshots.removeAll()
         firstAccumulationTime = nil
@@ -165,6 +252,9 @@ class BufferAccumulator {
         // Cancel timer
         accumulationTimer?.invalidate()
         accumulationTimer = nil
+
+        // IMPORTANT: Do NOT clear sessionTranscript or lastTranscriptSnapshot
+        // These must be preserved to maintain the full session history
     }
 
     /// Count the number of character changes between two strings
@@ -206,12 +296,14 @@ class BufferAccumulator {
         accumulationTimer?.invalidate()
         accumulationTimer = nil
 
-        // Clear state
+        // Clear all state including session transcript
         pendingSnapshots.removeAll()
         accumulatedContent = ""
         lastProcessedContent = ""
         firstAccumulationTime = nil
         totalAccumulatedChanges = 0
+        sessionTranscript = ""
+        lastTranscriptSnapshot = ""
     }
 
     deinit {
