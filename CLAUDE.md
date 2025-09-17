@@ -94,6 +94,13 @@ The application follows a simplified polling-based architecture that leverages V
 - `WebSocketProtocol.swift` - WebSocket connection patterns
 - Terminal buffer decoding and handling patterns
 
+**WebSocket Implementation**: Our macOS WebSocket implementation (`BufferWebSocketClient`, `WebSocketProtocol`, etc.) is an EXACT copy of the iOS VibeTunnel implementation. We match it precisely, including:
+- Using both query parameter AND Authorization header for authentication (iOS does both)
+- WebSocket abstraction layer with protocols and factory pattern
+- Ping-based connection verification
+- Binary buffer decoding logic
+Always refer to the iOS implementation as the source of truth and match it exactly.
+
 The app communicates with VibeTunnel sessions using two mechanisms:
 
 #### 1. IPC Socket (Control Commands)

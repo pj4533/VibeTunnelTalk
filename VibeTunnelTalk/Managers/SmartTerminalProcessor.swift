@@ -32,7 +32,7 @@ class SmartTerminalProcessor: ObservableObject {
     var debugFileHandle: FileHandle?
 
     // WebSocket accumulator
-    var currentAccumulator: BufferAccumulator?
+    // Placeholder for accumulator (removed with old WebSocket implementation)
 
     init(openAIManager: OpenAIRealtimeManager) {
         self.openAIManager = openAIManager
@@ -65,6 +65,45 @@ class SmartTerminalProcessor: ObservableObject {
             }
 
         isProcessing = true
+    }
+
+    /// Start processing buffer snapshots from WebSocket client
+    func startProcessingWithBufferClient(bufferClient: BufferWebSocketClient?, sessionId: String) async {
+        logger.info("[PROCESSOR] startProcessingWithWebSocket called for session: \(sessionId)")
+
+        // Create debug file for this session
+        createDebugFile()
+        logger.info("[PROCESSOR] Debug file created")
+
+        // Subscribe to WebSocket updates
+        guard let bufferClient = bufferClient else {
+            logger.warning("[PROCESSOR] No WebSocket client provided")
+            return
+        }
+
+        logger.info("[PROCESSOR] Subscribing to WebSocket updates for session: \(sessionId)")
+
+        // Subscribe to buffer updates from WebSocket
+        bufferClient.subscribe(to: sessionId) { [weak self] event in
+            guard let self = self else { return }
+
+            switch event {
+            case .bufferUpdate(let snapshot):
+                self.logger.debug("[PROCESSOR] Received buffer update from WebSocket")
+                self.processBufferSnapshot(snapshot)
+
+            case .bell:
+                self.logger.info("[PROCESSOR] Bell event received")
+                // Could play a bell sound here if desired
+
+            default:
+                break
+            }
+        }
+
+        logger.info("[PROCESSOR] WebSocket subscription completed")
+        isProcessing = true
+        logger.info("[PROCESSOR] Processing started (isProcessing = true)")
     }
 
     /// Stop processing
