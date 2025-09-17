@@ -67,8 +67,6 @@ The application uses a real-time WebSocket-based architecture that leverages Vib
    - Ping-based connection health monitoring (30-second intervals)
    - Located at: `VibeTunnelTalk/Services/WebSocket/BufferWebSocketClient.swift`
 
-   Note: VibeTunnelBufferService (REST API polling) is deprecated but kept for TerminalBufferView compatibility
-
 3. **SmartTerminalProcessor**: Processes buffer snapshots for intelligent narration
    - Subscribes to WebSocket buffer updates via BufferWebSocketClient
    - Uses BufferAccumulator for intelligent batching (100 char size / 2 sec time thresholds)

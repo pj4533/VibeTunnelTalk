@@ -165,9 +165,9 @@ class VibeTunnelSocketManager: ObservableObject {
     private func startBufferService(sessionId: String) {
         logger.info("[VIBETUNNEL-WEBSOCKET] startBufferService called for session: \(sessionId)")
 
-        // Create WebSocket client for real-time terminal snapshots
-        bufferWebSocketClient = BufferWebSocketClient()
-        logger.info("[VIBETUNNEL-WEBSOCKET] Created BufferWebSocketClient instance")
+        // Use shared WebSocket client for real-time terminal snapshots
+        bufferWebSocketClient = BufferWebSocketClient.shared
+        logger.info("[VIBETUNNEL-WEBSOCKET] Using shared BufferWebSocketClient instance")
 
         // Configure WebSocket client with auth service if available
         if let authService = authService {
@@ -221,11 +221,9 @@ class VibeTunnelSocketManager: ObservableObject {
                 terminalProcessor.stopProcessing()
             }
 
-            // Disconnect WebSocket
-            if let client = currentWebSocketClient {
-                logger.info("[VIBETUNNEL-WEBSOCKET] Disconnecting WebSocket client")
-                client.disconnect()
-            }
+            // Note: We don't disconnect the shared WebSocket client here since it might be
+            // used by other components (like TerminalBufferView)
+            logger.info("[VIBETUNNEL-WEBSOCKET] Keeping shared WebSocket client connected for other components")
         }
 
         logger.info("[VIBETUNNEL-WEBSOCKET] stopBufferService completed")
