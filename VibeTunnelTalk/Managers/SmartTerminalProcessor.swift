@@ -9,7 +9,6 @@ class SmartTerminalProcessor: ObservableObject {
 
     // Dependencies
     private let openAIManager: OpenAIRealtimeManager
-    private var bufferService: VibeTunnelBufferService?
 
     // Configuration
     @Published var minChangeThreshold: Int = 5 // Minimum character changes to trigger update
@@ -26,7 +25,6 @@ class SmartTerminalProcessor: ObservableObject {
     internal var lastBufferSnapshot: BufferSnapshot?
 
     // Subscriptions
-    private var bufferSubscription: AnyCancellable?
 
     // Debug file for OpenAI updates
     var debugFileHandle: FileHandle?
@@ -37,34 +35,6 @@ class SmartTerminalProcessor: ObservableObject {
     init(openAIManager: OpenAIRealtimeManager) {
         self.openAIManager = openAIManager
         self.debouncedLogger = DebouncedLogger(logger: AppLogger.terminalProcessor)
-    }
-
-    /// Start processing buffer snapshots from buffer service
-    func startProcessing(bufferService: VibeTunnelBufferService, sessionId: String) {
-        logger.info("[PROCESSOR] Starting smart terminal processing for session: \(sessionId)")
-
-        // Create debug file for this session
-        createDebugFile()
-
-        self.bufferService = bufferService
-
-        // Subscribe to buffer updates
-        bufferSubscription = bufferService.$currentBuffer
-            .compactMap { $0 } // Filter out nil values
-            .removeDuplicates { prev, current in
-                // Only process if the buffer content has actually changed
-                let equal = self.areBuffersEqual(prev, current)
-                if equal {
-                    self.logger.debug("[PROCESSOR] Skipping duplicate buffer")
-                }
-                return equal
-            }
-            .sink { [weak self] snapshot in
-                self?.logger.debug("[PROCESSOR] Received buffer snapshot from publisher")
-                self?.processBufferSnapshot(snapshot)
-            }
-
-        isProcessing = true
     }
 
     /// Start processing buffer snapshots from WebSocket client
@@ -156,9 +126,6 @@ class SmartTerminalProcessor: ObservableObject {
         currentAccumulator?.stop()
         currentAccumulator = nil
 
-        bufferSubscription?.cancel()
-        bufferSubscription = nil
-        bufferService = nil
         debugFileHandle?.closeFile()
         debugFileHandle = nil
 
@@ -170,44 +137,7 @@ class SmartTerminalProcessor: ObservableObject {
         stopProcessing()
     }
 
-    /// Get the current buffer snapshot for display
-    func getCurrentBufferSnapshot() -> BufferSnapshot? {
-        return bufferService?.currentBuffer
-    }
-
     // MARK: - Buffer Processing
-
-    /// Process a buffer snapshot
-    private func processBufferSnapshot(_ snapshot: BufferSnapshot) {
-        totalSnapshotsProcessed += 1
-
-        logger.info("[PROCESSOR] Processing buffer snapshot #\(self.totalSnapshotsProcessed)")
-
-        // Extract text content from buffer
-        let currentContent = extractTextFromBuffer(snapshot)
-        logger.debug("[PROCESSOR] Extracted \(currentContent.count) characters from buffer")
-
-        // Check if content has changed significantly
-        let changeCount = countChanges(from: lastSentContent, to: currentContent)
-
-        // Log periodically to track processing
-        if totalSnapshotsProcessed % 10 == 0 {
-            logger.debug("[PROCESSOR] Snapshot #\(self.totalSnapshotsProcessed): \(changeCount) chars changed")
-        }
-
-        // Only send update if changes exceed threshold
-        if changeCount >= minChangeThreshold {
-            sendUpdateToOpenAI(currentContent, changeCount: changeCount)
-            lastSentContent = currentContent
-        } else if changeCount > 0 {
-            // Log when we skip an update due to threshold
-            logger.debug("[PROCESSOR] Skipped update: \(changeCount) chars changed (below threshold of \(self.minChangeThreshold))")
-            writeSkippedUpdateToDebugFile(currentContent, changeCount: changeCount, reason: "Below threshold")
-        }
-
-        lastBufferSnapshot = snapshot
-        lastUpdate = Date()
-    }
 
     /// Extract text content from buffer snapshot
     internal func extractTextFromBuffer(_ snapshot: BufferSnapshot) -> String {

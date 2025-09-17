@@ -216,9 +216,9 @@ class VibeTunnelSocketManager: ObservableObject {
 
         // Stop the smart processor if it's running
         Task {
-            if let terminalProcessor = terminalProcessor, let client = currentWebSocketClient {
+            if let terminalProcessor = terminalProcessor, currentWebSocketClient != nil {
                 logger.info("[VIBETUNNEL-WEBSOCKET] Stopping WebSocket processing in terminal processor")
-                await terminalProcessor.stopProcessing()
+                terminalProcessor.stopProcessing()
             }
 
             // Disconnect WebSocket
