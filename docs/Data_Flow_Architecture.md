@@ -6,7 +6,7 @@ VibeTunnelTalk creates a voice interface for Claude Code sessions by monitoring 
 
 ## Architecture Components
 
-### 1. Terminal Buffer Polling
+### 1. Terminal Buffer Streaming
 
 VibeTunnelTalk connects to VibeTunnel sessions through two primary mechanisms:
 
@@ -16,12 +16,19 @@ VibeTunnelTalk connects to VibeTunnel sessions through two primary mechanisms:
 - **Protocol**: Binary message format with 5-byte header
 - **Direction**: VibeTunnelTalk → VibeTunnel
 
-#### Buffer API (Data Channel)
-- **Endpoint**: `http://localhost:4020/api/sessions/{session-id}/buffer`
-- **Purpose**: Fetches complete terminal state as structured data
-- **Protocol**: HTTP polling with JSON/Binary response
-- **Polling Rate**: Every 0.5 seconds
+#### WebSocket Stream (Data Channel)
+- **Endpoint**: `ws://localhost:4020/buffers`
+- **Purpose**: Receives real-time terminal buffer updates as binary data
+- **Protocol**: WebSocket with binary frame streaming
+- **Connection**: Persistent connection with automatic reconnection
 - **Direction**: VibeTunnel → VibeTunnelTalk
+
+The WebSocket implementation includes:
+- JWT authentication via both query parameter and Authorization header
+- Binary buffer format with magic bytes (0xBF for frames, 0x5654 for buffers)
+- Automatic reconnection with exponential backoff
+- Session subscription management via JSON messages
+- Ping-based connection health monitoring
 
 ### 2. Buffer Snapshot Structure
 
@@ -55,8 +62,9 @@ The Smart Terminal Processor is the brain of the narration system, converting ra
 #### Processing Pipeline
 
 1. **Buffer Reception**
-   - `VibeTunnelBufferService` polls the buffer endpoint every 500ms
-   - Receives complete `BufferSnapshot` with current terminal state
+   - `BufferWebSocketClient` maintains persistent WebSocket connection
+   - Receives real-time binary buffer updates as they occur
+   - Decodes binary format to `BufferSnapshot` structures
    - No need for ANSI parsing or terminal emulation
 
 2. **Text Extraction**
@@ -64,15 +72,17 @@ The Smart Terminal Processor is the brain of the narration system, converting ra
    - Preserves logical structure (lines, indentation)
    - Trims unnecessary whitespace while maintaining formatting
 
-3. **Change Detection**
-   - Compares current buffer content with previously sent content
-   - Calculates character-level differences
-   - Only processes changes exceeding minimum threshold (5 characters)
-
-4. **Intelligent Filtering**
-   - Skips updates when OpenAI is currently speaking
-   - Accumulates changes during speech for later processing
+3. **Intelligent Accumulation**
+   - Uses `BufferAccumulator` with configurable thresholds
+   - Size threshold: Sends when 100+ characters have changed
+   - Time threshold: Sends after 2 seconds of inactivity
    - Prevents overwhelming the voice interface with rapid changes
+
+4. **Change Detection & Filtering**
+   - Compares accumulated content with previously sent content
+   - Calculates character-level differences
+   - Skips updates when OpenAI is currently speaking
+   - Queues changes during speech for later processing
 
 #### Data Reduction
 The processor achieves significant data reduction:
@@ -116,16 +126,18 @@ The reverse flow enables voice control of Claude through natural speech.
 
 ### 6. System Synchronization
 
-The simplified architecture maintains synchronization through:
+The real-time architecture maintains synchronization through:
 
-#### Polling Consistency
-- Regular 500ms polling ensures timely updates
-- Buffer snapshots provide complete state (no incremental updates needed)
+#### WebSocket Streaming
+- Real-time buffer updates as they occur
+- Binary protocol for efficient data transfer
+- Complete buffer snapshots ensure state consistency
 - Cursor position and viewport tracked for context
 
 #### Connection Management
 - IPC socket for reliable command delivery
-- HTTP polling with automatic retry on failure
+- WebSocket with automatic reconnection and exponential backoff
+- Session re-subscription after reconnection
 - Graceful handling of connection loss
 
 #### Response Coordination
@@ -138,14 +150,15 @@ The simplified architecture maintains synchronization through:
 The complete data flow creates a continuous feedback loop:
 
 1. **Terminal State** → VibeTunnel maintains complete terminal buffer
-2. **Buffer Polling** → VibeTunnelTalk fetches snapshots every 500ms
-3. **Text Extraction** → Smart processor extracts plain text from cell grid
-4. **Change Detection** → Identifies meaningful content changes
-5. **Voice Narration** → OpenAI generates and speaks contextual narration
-6. **Voice Commands** → User speech interpreted by OpenAI
-7. **Command Execution** → Commands sent via IPC socket to terminal
-8. **Terminal Update** → Claude responds, updating the buffer
-9. **Cycle Continues** → Next poll captures the updated state
+2. **Buffer Streaming** → WebSocket delivers real-time buffer updates
+3. **Binary Decoding** → BufferWebSocketClient decodes binary frames to snapshots
+4. **Intelligent Accumulation** → BufferAccumulator batches changes based on size/time
+5. **Text Extraction** → Smart processor extracts plain text from cell grid
+6. **Voice Narration** → OpenAI generates and speaks contextual narration
+7. **Voice Commands** → User speech interpreted by OpenAI
+8. **Command Execution** → Commands sent via IPC socket to terminal
+9. **Terminal Update** → Claude responds, triggering new buffer updates
+10. **Cycle Continues** → WebSocket immediately streams the changes
 
 ## Key Architecture Benefits
 
@@ -155,14 +168,16 @@ The complete data flow creates a continuous feedback loop:
 - Clean separation between data fetching and processing
 
 ### Reliability
-- Polling provides predictable, consistent updates
+- WebSocket provides immediate, real-time updates
 - Complete state in each snapshot (no state synchronization issues)
-- Simple HTTP/socket protocols with clear error handling
+- Automatic reconnection with exponential backoff
+- Clear error handling and session management
 
 ### Performance
-- Efficient binary buffer format when available
-- Smart filtering reduces OpenAI API calls
-- Polling interval balanced for responsiveness vs. overhead
+- Efficient binary buffer format for minimal overhead
+- Intelligent accumulation reduces OpenAI API calls
+- Real-time streaming eliminates polling latency
+- Size and time thresholds optimize responsiveness
 
 ### Maintainability
 - Minimal code surface area
@@ -173,22 +188,34 @@ The complete data flow creates a continuous feedback loop:
 
 ### Core Components
 
-1. **VibeTunnelBufferService** (`Services/VibeTunnelBufferService.swift`)
-   - Handles HTTP polling of buffer endpoint
-   - Decodes both JSON and binary buffer formats
-   - Publishes buffer updates via Combine
+1. **BufferWebSocketClient** (`Services/WebSocket/BufferWebSocketClient.swift`)
+   - Maintains persistent WebSocket connection to `/buffers` endpoint
+   - Handles binary message decoding with magic byte validation
+   - Manages session subscriptions and automatic reconnection
+   - Publishes buffer updates to subscribers
 
-2. **SmartTerminalProcessor** (`Managers/SmartTerminalProcessor.swift`)
-   - Subscribes to buffer updates
+2. **VibeTunnelBufferService** (`Services/VibeTunnelBufferService.swift`)
+   - Legacy HTTP polling implementation (deprecated)
+   - Kept for compatibility with TerminalBufferView
+   - Being phased out in favor of WebSocket streaming
+
+3. **SmartTerminalProcessor** (`Managers/SmartTerminalProcessor.swift`)
+   - Subscribes to WebSocket buffer updates
+   - Uses BufferAccumulator for intelligent batching
    - Extracts and compares text content
    - Manages communication with OpenAI
 
-3. **VibeTunnelSocketManager** (`Managers/VibeTunnelSocketManager.swift`)
+4. **BufferAccumulator** (`Services/BufferAccumulator.swift`)
+   - Accumulates buffer changes based on size/time thresholds
+   - Prevents overwhelming OpenAI with rapid updates
+   - Configurable thresholds for different use cases
+
+5. **VibeTunnelSocketManager** (`Managers/VibeTunnelSocketManager.swift`)
    - Manages IPC socket connection
    - Sends terminal input commands
-   - Coordinates buffer service lifecycle
+   - Coordinates WebSocket client lifecycle
 
-4. **OpenAIRealtimeManager** (`Managers/OpenAIRealtimeManager.swift`)
+6. **OpenAIRealtimeManager** (`Managers/OpenAIRealtimeManager.swift`)
    - WebSocket connection to OpenAI Realtime API
    - Audio streaming and speech synthesis
    - Voice command processing

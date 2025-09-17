@@ -40,35 +40,39 @@ open VibeTunnelTalk.xcodeproj
 
 ## Architecture
 
-The application follows a simplified polling-based architecture that leverages VibeTunnel's server-side terminal processing capabilities.
+The application uses a real-time WebSocket-based architecture that leverages VibeTunnel's server-side terminal processing capabilities.
 
 ### Data Flow Architecture
 
 **Important**: For a comprehensive understanding of how data flows through the application, refer to `docs/Data_Flow_Architecture.md`. This document explains:
-- How VibeTunnelTalk polls and processes terminal buffer snapshots
-- The simplified architecture without ANSI parsing or SSE streaming
-- The intelligent change detection and filtering pipeline
+- How VibeTunnelTalk receives real-time terminal buffer updates via WebSocket
+- The binary protocol with magic byte validation and efficient data transfer
+- The intelligent accumulation and change detection pipeline
 - The bidirectional voice communication flow
-- The complete data flow from buffer snapshot to voice narration and back
+- The complete data flow from buffer streaming to voice narration and back
 
 ### Core Components
 
 1. **VibeTunnelSocketManager**: Manages Unix domain socket connections to VibeTunnel sessions
    - Implements the VibeTunnel IPC protocol for sending commands
-   - Coordinates the buffer polling service lifecycle
+   - Coordinates the WebSocket client lifecycle
    - Located at: `VibeTunnelTalk/Managers/VibeTunnelSocketManager.swift`
 
-2. **VibeTunnelWebSocketClient**: Real-time WebSocket connection for terminal buffer streaming
-   - Establishes WebSocket connection to VibeTunnel's `/buffers` endpoint
-   - Receives binary buffer updates in real-time
-   - Implements automatic reconnection with exponential backoff
-   - Located at: `VibeTunnelTalk/Services/VibeTunnelWebSocketClient.swift`
+2. **BufferWebSocketClient**: Real-time WebSocket connection for terminal buffer streaming
+   - Establishes WebSocket connection to VibeTunnel's `/buffers` endpoint at `ws://localhost:4020/buffers`
+   - Receives binary buffer updates in real-time with magic byte validation (0xBF for frames, 0x5654 for buffers)
+   - Implements JWT authentication via both query parameter AND Authorization header (matching iOS implementation)
+   - Automatic reconnection with exponential backoff
+   - Session subscription management via JSON messages
+   - Ping-based connection health monitoring (30-second intervals)
+   - Located at: `VibeTunnelTalk/Services/WebSocket/BufferWebSocketClient.swift`
 
    Note: VibeTunnelBufferService (REST API polling) is deprecated but kept for TerminalBufferView compatibility
 
 3. **SmartTerminalProcessor**: Processes buffer snapshots for intelligent narration
+   - Subscribes to WebSocket buffer updates via BufferWebSocketClient
+   - Uses BufferAccumulator for intelligent batching (100 char size / 2 sec time thresholds)
    - Extracts plain text from buffer cell grid
-   - Detects meaningful changes between snapshots
    - Manages communication with OpenAI
    - Located at: `VibeTunnelTalk/Managers/SmartTerminalProcessor.swift`
 
@@ -113,11 +117,13 @@ The app communicates with VibeTunnel sessions using two mechanisms:
   - HEARTBEAT (0x04): Keep-alive ping/pong
   - ERROR (0x05): Error messages
 
-#### 2. Buffer API (Terminal State)
-- Endpoint: `http://localhost:4020/api/sessions/{session-id}/buffer`
-- Protocol: HTTP polling (every 500ms)
-- Response: Complete terminal buffer snapshot with cell-level detail
-- Format: JSON or binary, containing 2D grid of terminal cells with text and formatting
+#### 2. WebSocket Stream (Terminal State)
+- Endpoint: `ws://localhost:4020/buffers`
+- Protocol: WebSocket with binary frame streaming
+- Authentication: JWT token in query parameter and Authorization header
+- Subscription: JSON messages to subscribe/unsubscribe from sessions
+- Response: Real-time binary buffer updates with cell-level detail
+- Format: Binary protocol with magic bytes (0xBF for frames, 0x5654 for buffers)
 
 ### Key Dependencies
 
@@ -150,7 +156,7 @@ A comprehensive implementation guide is available in `docs/VibeTunnelTalk_Implem
 
 5. **No ANSI Parsing**: VibeTunnel handles all terminal emulation and ANSI escape sequence parsing server-side
 
-6. **Error Handling**: Implement reconnection logic for IPC socket, HTTP polling, and WebSocket connections
+6. **Error Handling**: Implement reconnection logic for IPC socket and WebSocket connections (automatic exponential backoff included)
 
 ## Reference Implementation
 

@@ -111,7 +111,7 @@ VibeTunnelTalk uses a real-time WebSocket architecture that leverages VibeTunnel
 ### Core Components
 
 - **VibeTunnelSocketManager**: Manages Unix domain socket connections to VibeTunnel IPC
-- **VibeTunnelWebSocketClient**: Real-time WebSocket connection for terminal buffer streaming
+- **BufferWebSocketClient**: Real-time WebSocket connection for terminal buffer streaming
 - **SmartTerminalProcessor**: Intelligently accumulates and processes changes with configurable thresholds
 - **OpenAIRealtimeManager**: WebSocket connection to OpenAI's Realtime API for voice
 - **VoiceCommandProcessor**: Maps voice intents to terminal commands
@@ -214,8 +214,13 @@ VibeTunnelTalk/
 │   ├── OpenAIRealtimeManager.swift
 │   └── VoiceCommandProcessor.swift
 ├── Services/           # Network and data services
-│   ├── VibeTunnelBufferService.swift
-│   └── AuthenticationService.swift
+│   ├── WebSocket/     # WebSocket infrastructure
+│   │   ├── BufferWebSocketClient.swift
+│   │   ├── WebSocketProtocol.swift
+│   │   └── URLSessionWebSocket.swift
+│   ├── VibeTunnelBufferService.swift (deprecated)
+│   ├── BufferAccumulator.swift
+│   └── VibeTunnelAuthService.swift
 ├── Models/            # Data models
 │   ├── BufferSnapshot.swift
 │   ├── VibeTunnelMessage.swift
