@@ -22,6 +22,7 @@ class BufferAccumulator {
     // Session transcript tracking
     private var sessionTranscript = ""    // Complete history of all terminal content
     private var lastTranscriptSnapshot = "" // Last known terminal state for detecting clears
+    private var lastSentIndex = 0          // Track what portion of transcript we've already sent
 
     // Callback
     private let onThresholdReached: (String, Int) -> Void
@@ -84,8 +85,8 @@ class BufferAccumulator {
                 sessionTranscript += "\n" + lastTranscriptSnapshot
             }
 
-            // Add a marker to indicate terminal was cleared
-            sessionTranscript += "\n[Terminal Cleared]\n"
+            // Add a concise marker to indicate terminal was cleared
+            sessionTranscript += "\n...\n"
 
             // Add the new content
             sessionTranscript += newContent
@@ -229,16 +230,30 @@ class BufferAccumulator {
             return
         }
 
-        logger.info("[ACCUMULATOR] Flushing session transcript: \(self.sessionTranscript.count) total chars (accumulated: \(self.accumulatedContent.count) chars, changed: \(changeCount) chars)")
+        // Extract only the new content that hasn't been sent yet
+        let transcriptLength = sessionTranscript.count
+        guard lastSentIndex < transcriptLength else {
+            logger.debug("[ACCUMULATOR] All content already sent")
+            resetState()
+            return
+        }
 
-        // Send the complete session transcript for full context
-        // This ensures OpenAI always has the complete history, even after terminal clears
-        onThresholdReached(sessionTranscript, changeCount)
+        // Get the unsent portion of the transcript
+        let startIndex = sessionTranscript.index(sessionTranscript.startIndex, offsetBy: lastSentIndex)
+        let unsentContent = String(sessionTranscript[startIndex...])
+
+        logger.info("[ACCUMULATOR] Sending incremental update: \(unsentContent.count) new chars (position \(self.lastSentIndex) to \(transcriptLength) of \(transcriptLength) total)")
+
+        // Send only the new content that hasn't been sent before
+        onThresholdReached(unsentContent, changeCount)
+
+        // Update our position in the transcript
+        lastSentIndex = transcriptLength
 
         // Update last processed content
         lastProcessedContent = accumulatedContent
 
-        // Reset accumulation state (but preserve transcript)
+        // Reset accumulation state (but preserve transcript and sent position)
         resetState()
     }
 
@@ -253,8 +268,8 @@ class BufferAccumulator {
         accumulationTimer?.invalidate()
         accumulationTimer = nil
 
-        // IMPORTANT: Do NOT clear sessionTranscript or lastTranscriptSnapshot
-        // These must be preserved to maintain the full session history
+        // IMPORTANT: Do NOT clear sessionTranscript, lastTranscriptSnapshot, or lastSentIndex
+        // These must be preserved to maintain the full session history and track what's been sent
     }
 
     /// Count the number of character changes between two strings
@@ -304,6 +319,7 @@ class BufferAccumulator {
         totalAccumulatedChanges = 0
         sessionTranscript = ""
         lastTranscriptSnapshot = ""
+        lastSentIndex = 0
     }
 
     deinit {
