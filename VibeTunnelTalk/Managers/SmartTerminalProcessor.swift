@@ -32,7 +32,7 @@ class SmartTerminalProcessor: ObservableObject {
     var debugFileHandle: FileHandle?
 
     // WebSocket accumulator
-    // Placeholder for accumulator (removed with old WebSocket implementation)
+    private var currentAccumulator: BufferAccumulator?
 
     init(openAIManager: OpenAIRealtimeManager) {
         self.openAIManager = openAIManager
@@ -81,6 +81,23 @@ class SmartTerminalProcessor: ObservableObject {
             return
         }
 
+        // Create accumulator with intelligent thresholds
+        let accumulator = BufferAccumulator(
+            sizeThreshold: 100,    // Send when 100+ chars change (more responsive)
+            timeThreshold: 2.0     // Send after 2 seconds of inactivity
+        ) { [weak self] content, changeCount in
+            guard let self = self else { return }
+
+            // Update lastSentContent to track what we've sent
+            self.lastSentContent = content
+
+            // Send to OpenAI
+            self.sendUpdateToOpenAI(content, changeCount: changeCount)
+        }
+
+        self.currentAccumulator = accumulator
+        logger.info("[PROCESSOR] Created accumulator with size threshold: 100, time threshold: 2.0s")
+
         logger.info("[PROCESSOR] Subscribing to WebSocket updates for session: \(sessionId)")
 
         // Subscribe to buffer updates from WebSocket
@@ -90,7 +107,7 @@ class SmartTerminalProcessor: ObservableObject {
             switch event {
             case .bufferUpdate(let snapshot):
                 self.logger.debug("[PROCESSOR] Received buffer update from WebSocket")
-                self.processBufferSnapshot(snapshot)
+                self.processWebSocketSnapshot(snapshot)
 
             case .bell:
                 self.logger.info("[PROCESSOR] Bell event received")
@@ -106,9 +123,38 @@ class SmartTerminalProcessor: ObservableObject {
         logger.info("[PROCESSOR] Processing started (isProcessing = true)")
     }
 
+    /// Process a snapshot received via WebSocket
+    private func processWebSocketSnapshot(_ snapshot: BufferSnapshot) {
+        totalSnapshotsProcessed += 1
+
+        logger.debug("[PROCESSOR] Processing WebSocket snapshot #\(self.totalSnapshotsProcessed)")
+
+        // Extract text content from buffer
+        let currentContent = extractTextFromBuffer(snapshot)
+        logger.debug("[PROCESSOR] Extracted \(currentContent.count) characters from buffer")
+
+        // Check if content has changed from what we last sent
+        let changeCount = countChanges(from: lastSentContent, to: currentContent)
+
+        // Log periodically to track processing
+        if totalSnapshotsProcessed % 10 == 0 {
+            logger.debug("[PROCESSOR] WebSocket snapshot #\(self.totalSnapshotsProcessed): \(changeCount) chars changed")
+        }
+
+        // Pass to accumulator - it will decide when to flush based on thresholds
+        currentAccumulator?.accumulate(snapshot, extractedContent: currentContent, changeCount: changeCount)
+
+        lastBufferSnapshot = snapshot
+        lastUpdate = Date()
+    }
+
     /// Stop processing
     func stopProcessing() {
         logger.info("[PROCESSOR] Stopping smart terminal processing")
+
+        // Stop accumulator and flush any pending data
+        currentAccumulator?.stop()
+        currentAccumulator = nil
 
         bufferSubscription?.cancel()
         bufferSubscription = nil
