@@ -3,6 +3,9 @@ import Combine
 import OSLog
 
 /// Service for fetching terminal buffer snapshots from VibeTunnel API
+/// - Warning: This class is deprecated. Use VibeTunnelWebSocketClient for real-time updates instead.
+/// - Note: Kept for compatibility with TerminalBufferView. Will be removed in a future update.
+@available(*, deprecated, message: "Use VibeTunnelWebSocketClient for real-time buffer updates")
 class VibeTunnelBufferService: ObservableObject {
     private let logger = AppLogger.network
 

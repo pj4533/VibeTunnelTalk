@@ -22,7 +22,7 @@ class SmartTerminalProcessor: ObservableObject {
     @Published var dataReductionRatio: Double = 0.0
 
     // For diffing
-    private var lastSentContent = ""
+    internal var lastSentContent = ""
     internal var lastBufferSnapshot: BufferSnapshot?
 
     // Subscriptions
@@ -30,6 +30,9 @@ class SmartTerminalProcessor: ObservableObject {
 
     // Debug file for OpenAI updates
     var debugFileHandle: FileHandle?
+
+    // WebSocket accumulator
+    private var currentAccumulator: BufferAccumulator?
 
     init(openAIManager: OpenAIRealtimeManager) {
         self.openAIManager = openAIManager
@@ -64,9 +67,94 @@ class SmartTerminalProcessor: ObservableObject {
         isProcessing = true
     }
 
+    /// Start processing buffer snapshots from WebSocket client
+    func startProcessingWithBufferClient(bufferClient: BufferWebSocketClient?, sessionId: String) async {
+        logger.info("[PROCESSOR] startProcessingWithWebSocket called for session: \(sessionId)")
+
+        // Create debug file for this session
+        createDebugFile()
+        logger.info("[PROCESSOR] Debug file created")
+
+        // Subscribe to WebSocket updates
+        guard let bufferClient = bufferClient else {
+            logger.warning("[PROCESSOR] No WebSocket client provided")
+            return
+        }
+
+        // Create accumulator with intelligent thresholds
+        let accumulator = BufferAccumulator(
+            sizeThreshold: 100,    // Send when 100+ chars change (more responsive)
+            timeThreshold: 2.0     // Send after 2 seconds of inactivity
+        ) { [weak self] content, changeCount in
+            guard let self = self else { return }
+
+            // Update lastSentContent to track what we've sent
+            self.lastSentContent = content
+
+            // Send to OpenAI
+            self.sendUpdateToOpenAI(content, changeCount: changeCount)
+        }
+
+        self.currentAccumulator = accumulator
+        logger.info("[PROCESSOR] Created accumulator with size threshold: 100, time threshold: 2.0s")
+
+        logger.info("[PROCESSOR] Subscribing to WebSocket updates for session: \(sessionId)")
+
+        // Subscribe to buffer updates from WebSocket
+        bufferClient.subscribe(to: sessionId) { [weak self] event in
+            guard let self = self else { return }
+
+            switch event {
+            case .bufferUpdate(let snapshot):
+                self.logger.debug("[PROCESSOR] Received buffer update from WebSocket")
+                self.processWebSocketSnapshot(snapshot)
+
+            case .bell:
+                self.logger.info("[PROCESSOR] Bell event received")
+                // Could play a bell sound here if desired
+
+            default:
+                break
+            }
+        }
+
+        logger.info("[PROCESSOR] WebSocket subscription completed")
+        isProcessing = true
+        logger.info("[PROCESSOR] Processing started (isProcessing = true)")
+    }
+
+    /// Process a snapshot received via WebSocket
+    private func processWebSocketSnapshot(_ snapshot: BufferSnapshot) {
+        totalSnapshotsProcessed += 1
+
+        logger.debug("[PROCESSOR] Processing WebSocket snapshot #\(self.totalSnapshotsProcessed)")
+
+        // Extract text content from buffer
+        let currentContent = extractTextFromBuffer(snapshot)
+        logger.debug("[PROCESSOR] Extracted \(currentContent.count) characters from buffer")
+
+        // Check if content has changed from what we last sent
+        let changeCount = countChanges(from: lastSentContent, to: currentContent)
+
+        // Log periodically to track processing
+        if totalSnapshotsProcessed % 10 == 0 {
+            logger.debug("[PROCESSOR] WebSocket snapshot #\(self.totalSnapshotsProcessed): \(changeCount) chars changed")
+        }
+
+        // Pass to accumulator - it will decide when to flush based on thresholds
+        currentAccumulator?.accumulate(snapshot, extractedContent: currentContent, changeCount: changeCount)
+
+        lastBufferSnapshot = snapshot
+        lastUpdate = Date()
+    }
+
     /// Stop processing
     func stopProcessing() {
         logger.info("[PROCESSOR] Stopping smart terminal processing")
+
+        // Stop accumulator and flush any pending data
+        currentAccumulator?.stop()
+        currentAccumulator = nil
 
         bufferSubscription?.cancel()
         bufferSubscription = nil
@@ -122,7 +210,7 @@ class SmartTerminalProcessor: ObservableObject {
     }
 
     /// Extract text content from buffer snapshot
-    private func extractTextFromBuffer(_ snapshot: BufferSnapshot) -> String {
+    internal func extractTextFromBuffer(_ snapshot: BufferSnapshot) -> String {
         var lines: [String] = []
 
         for row in snapshot.cells {
@@ -162,7 +250,7 @@ class SmartTerminalProcessor: ObservableObject {
     }
 
     /// Count the number of character changes between two strings
-    private func countChanges(from old: String, to new: String) -> Int {
+    internal func countChanges(from old: String, to new: String) -> Int {
         // Simple character difference count
         if old.isEmpty { return new.count }
         if new.isEmpty { return old.count }
@@ -185,7 +273,7 @@ class SmartTerminalProcessor: ObservableObject {
     // MARK: - OpenAI Integration
 
     /// Send update to OpenAI
-    private func sendUpdateToOpenAI(_ content: String, changeCount: Int) {
+    internal func sendUpdateToOpenAI(_ content: String, changeCount: Int) {
         logger.info("[PROCESSOR] sendUpdateToOpenAI called with \(content.count) chars, \(changeCount) changed")
 
         guard !content.isEmpty else {
@@ -193,10 +281,10 @@ class SmartTerminalProcessor: ObservableObject {
             return
         }
 
-        // Don't send updates if OpenAI is currently speaking
-        guard !openAIManager.isSpeaking else {
-            logger.debug("[PROCESSOR] Skipping update - OpenAI is speaking")
-            return
+        // Log if OpenAI is speaking but still send the update
+        // OpenAI can handle concurrent updates
+        if openAIManager.isSpeaking {
+            logger.debug("[PROCESSOR] Note: OpenAI is currently speaking, but sending update anyway")
         }
 
         totalUpdatesSent += 1

@@ -50,7 +50,7 @@ VibeTunnelTalk is the perfect companion for Claude Code sessions, providing:
 - **🧠 Smart Filtering** - Intelligently filters repetitive output to focus on what matters
 - **⚡ Low Latency** - Sub-second response times with OpenAI's Realtime API
 - **🔒 Secure Authentication** - JWT-based authentication with VibeTunnel server
-- **📊 Buffer Snapshots** - Efficient polling-based architecture without ANSI parsing
+- **📊 Real-time Updates** - WebSocket streaming for instant terminal updates without polling
 - **🎵 High-Quality Audio** - 24kHz PCM16 audio for crystal-clear voice interaction
 - **🍎 Native macOS** - Built with SwiftUI for seamless Mac integration
 - **🗣️ Voice Input** - Voice command processing (in development)
@@ -106,19 +106,19 @@ VibeTunnelTalk is the perfect companion for Claude Code sessions, providing:
 
 ## Architecture
 
-VibeTunnelTalk uses a simplified polling-based architecture that leverages VibeTunnel's server-side terminal processing:
+VibeTunnelTalk uses a real-time WebSocket architecture that leverages VibeTunnel's server-side terminal processing:
 
 ### Core Components
 
 - **VibeTunnelSocketManager**: Manages Unix domain socket connections to VibeTunnel IPC
-- **VibeTunnelBufferService**: Polls VibeTunnel's buffer API every 500ms for terminal snapshots
-- **SmartTerminalProcessor**: Intelligently processes changes and manages OpenAI communication
+- **VibeTunnelWebSocketClient**: Real-time WebSocket connection for terminal buffer streaming
+- **SmartTerminalProcessor**: Intelligently accumulates and processes changes with configurable thresholds
 - **OpenAIRealtimeManager**: WebSocket connection to OpenAI's Realtime API for voice
 - **VoiceCommandProcessor**: Maps voice intents to terminal commands
 
 ### Data Flow
 
-1. **Terminal Buffer Polling**: Fetches complete terminal state from VibeTunnel every 500ms
+1. **Real-time Streaming**: Receives terminal buffer updates via WebSocket as they happen
 2. **Change Detection**: Compares snapshots to detect meaningful changes
 3. **Smart Filtering**: Removes repetitive patterns and focuses on important content
 4. **Voice Generation**: Sends filtered changes to OpenAI for narration
@@ -135,10 +135,10 @@ VibeTunnelTalk communicates with VibeTunnel through two interfaces:
 - Protocol: Binary message format with 5-byte header
 - Used for: Sending keyboard input and control commands
 
-### Buffer API (State)
-- Endpoint: `http://localhost:4020/api/sessions/{session-id}/buffer`
-- Protocol: HTTP polling (500ms interval)
-- Used for: Fetching complete terminal buffer snapshots
+### WebSocket API (State)
+- Endpoint: `ws://localhost:4020/buffers`
+- Protocol: Binary WebSocket with real-time streaming
+- Used for: Receiving terminal buffer updates in real-time with efficient accumulation
 
 ### Authentication
 - JWT tokens for secure API access
