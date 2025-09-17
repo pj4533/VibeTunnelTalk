@@ -4,7 +4,7 @@ import OSLog
 /// Accumulates terminal buffer updates from real-time WebSocket streaming
 /// Designed specifically for WebSocket's continuous buffer snapshots, not polling
 class BufferAccumulator {
-    private let logger = AppLogger.terminalProcessor
+    private let logger = AppLogger.accumulator
 
     // Configuration
     let sizeThreshold: Int         // Characters to accumulate before sending
@@ -43,7 +43,7 @@ class BufferAccumulator {
         let newContent = findNewContent(from: previousBufferLines, to: currentBufferLines)
 
         if !newContent.isEmpty {
-            logger.debug("[ACCUMULATOR] Found \(newContent.count) chars of new content")
+            logger.verbose("Found \(newContent.count) chars of new content")
 
             // Add to session transcript
             sessionTranscript += newContent
@@ -55,7 +55,7 @@ class BufferAccumulator {
             // Start accumulation timer if this is the first content
             if firstAccumulationTime == nil {
                 firstAccumulationTime = Date()
-                logger.debug("[ACCUMULATOR] Starting accumulation period")
+                logger.verbose("Starting accumulation period")
             }
         }
 
@@ -137,7 +137,7 @@ class BufferAccumulator {
 
         // If still no overlap, terminal was likely cleared or completely changed
         if !foundOverlap && !newLines.joined().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            logger.info("[ACCUMULATOR] No overlap found - terminal likely cleared")
+            logger.debug("No overlap found - terminal likely cleared")
             // Add a separator to indicate discontinuity
             newContent = "\n---\n" + newLines.joined(separator: "\n") + "\n"
         }
@@ -167,7 +167,7 @@ class BufferAccumulator {
         }
 
         if shouldFlush {
-            logger.info("[ACCUMULATOR] Flushing due to \(reason)")
+            logger.debug("Flushing due to \(reason)")
             flush()
         } else {
             // Start timer if we have content but haven't started one
@@ -186,7 +186,7 @@ class BufferAccumulator {
 
     private func timerFired() {
         if pendingContentSize > 0 {
-            logger.info("[ACCUMULATOR] Timer expired, flushing \(self.pendingContentSize) chars")
+            logger.debug("Timer expired, flushing \(self.pendingContentSize) chars")
             flush()
         }
     }
@@ -197,7 +197,7 @@ class BufferAccumulator {
         // Get the unsent portion of the transcript
         let transcriptLength = sessionTranscript.count
         guard lastSentIndex < transcriptLength else {
-            logger.debug("[ACCUMULATOR] All content already sent")
+            logger.verbose("All content already sent")
             resetPendingState()
             return
         }
@@ -206,7 +206,7 @@ class BufferAccumulator {
         let startIndex = sessionTranscript.index(sessionTranscript.startIndex, offsetBy: lastSentIndex)
         let unsentContent = String(sessionTranscript[startIndex...])
 
-        logger.info("[ACCUMULATOR] Sending \(unsentContent.count) new chars (position \(self.lastSentIndex) to \(transcriptLength))")
+        logger.debug("📤 Sending \(unsentContent.count) new chars (position \(self.lastSentIndex) to \(transcriptLength))")
 
         // Send the unsent content
         onThresholdReached(unsentContent, pendingContentSize)
@@ -229,14 +229,14 @@ class BufferAccumulator {
     /// Force flush any pending data
     func forceFlush() {
         if pendingContentSize > 0 {
-            logger.info("[ACCUMULATOR] Force flushing \(self.pendingContentSize) chars")
+            logger.debug("Force flushing \(self.pendingContentSize) chars")
             flush()
         }
     }
 
     /// Stop accumulation and cleanup
     func stop() {
-        logger.info("[ACCUMULATOR] Stopping accumulator")
+        logger.debug("Stopping accumulator")
 
         // Flush any pending data
         forceFlush()

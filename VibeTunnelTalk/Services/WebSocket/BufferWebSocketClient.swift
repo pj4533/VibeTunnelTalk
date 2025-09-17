@@ -98,7 +98,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
                 return
             }
 
-            logger.info("Connecting to \(wsURL)")
+            logger.debug("Connecting to \(wsURL)")
 
             // Disconnect existing WebSocket if any
             webSocket?.disconnect(with: .goingAway, reason: nil)
@@ -149,11 +149,11 @@ class BufferWebSocketClient: NSObject, ObservableObject {
             case "connected":
                 // Server welcome message - just log it
                 let version = json["version"] as? String ?? "unknown"
-                logger.info("Received server welcome message (version: \(version))")
+                logger.debug("Server welcome: version \(version)")
 
             case "subscribed":
                 if let sessionId = json["sessionId"] as? String {
-                    logger.info("Server confirmed subscription to session: \(sessionId)")
+                    logger.debug("Subscribed to session: \(sessionId)")
                 }
 
             case "ping":
@@ -174,7 +174,10 @@ class BufferWebSocketClient: NSObject, ObservableObject {
     }
 
     private func handleBinaryMessage(_ data: Data) {
-        logger.debug("Received binary message: \(data.count) bytes")
+        // Only log significant binary messages
+        if data.count > 1000 {
+            logger.verbose("Large binary message: \(data.count) bytes")
+        }
 
         guard data.count > 5 else {
             logger.debug("Binary message too short")
@@ -208,21 +211,19 @@ class BufferWebSocketClient: NSObject, ObservableObject {
             logger.warning("Failed to decode session ID")
             return
         }
-        logger.debug("Session ID: \(sessionId)")
+        // Session ID extracted
         offset += Int(sessionIdLength)
 
         // Remaining data is the message payload
         let messageData = data.subdata(in: offset..<data.count)
-        logger.debug("Message payload: \(messageData.count) bytes")
 
         // Decode terminal event
         if let event = decodeTerminalEvent(from: messageData),
            let handler = subscriptions[sessionId]
         {
-            logger.debug("Dispatching event to handler")
             handler(event)
         } else {
-            logger.debug("No handler for session ID: \(sessionId)")
+            logger.verbose("No handler for session ID: \(sessionId)")
         }
     }
 
@@ -230,11 +231,11 @@ class BufferWebSocketClient: NSObject, ObservableObject {
         // This is binary buffer data, not JSON
         // Decode the binary terminal buffer
         guard let bufferSnapshot = decodeBinaryBuffer(data) else {
-            logger.debug("Failed to decode binary buffer")
+            logger.verbose("Failed to decode binary buffer")
             return nil
         }
 
-        logger.debug("Decoded buffer: \(bufferSnapshot.cols)x\(bufferSnapshot.rows)")
+        // Successfully decoded buffer
 
         // Return buffer update event
         return .bufferUpdate(snapshot: bufferSnapshot)
@@ -245,7 +246,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
         // Read header
         guard data.count >= 32 else {
-            logger.debug("Buffer too small for header: \(data.count) bytes (need 32)")
+            logger.verbose("Buffer too small for header: \(data.count) bytes (need 32)")
             return nil
         }
 
@@ -284,7 +285,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
         // Dimensions and cursor - validate before reading
         guard offset + 20 <= data.count else {
-            logger.debug("Insufficient data for header fields")
+            logger.verbose("Insufficient data for header fields")
             return nil
         }
 
@@ -324,8 +325,8 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
         // Validate cursor position
         if cursorX < 0 || cursorX > Int32(cols) || cursorY < 0 || cursorY > Int32(rows) {
-            logger.debug(
-                "Warning: cursor position out of bounds: (\(cursorX),\(cursorY)) for \(cols)x\(rows)"
+            logger.verbose(
+                "Cursor out of bounds: (\(cursorX),\(cursorY)) for \(cols)x\(rows)"
             )
         }
 
@@ -335,7 +336,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
         while offset < data.count && totalRows < Int(rows) {
             guard offset < data.count else {
-                logger.debug("Unexpected end of data at offset \(offset)")
+                logger.verbose("Unexpected end of data at offset \(offset)")
                 break
             }
 
@@ -345,7 +346,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
             if marker == 0xFE {
                 // Empty row(s)
                 guard offset < data.count else {
-                    logger.debug("Missing count byte for empty rows")
+                    logger.verbose("Missing count byte for empty rows")
                     break
                 }
 
@@ -362,7 +363,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
             } else if marker == 0xFD {
                 // Row with content
                 guard offset + 2 <= data.count else {
-                    logger.debug("Insufficient data for cell count")
+                    logger.verbose("Insufficient data for cell count")
                     break
                 }
 
@@ -373,7 +374,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
                 // Validate cell count
                 guard cellCount <= cols * 2 else { // Allow for wide chars
-                    logger.debug("Invalid cell count: \(cellCount) for \(cols) columns")
+                    logger.verbose("Invalid cell count: \(cellCount) for \(cols) columns")
                     break
                 }
 
@@ -388,11 +389,11 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
                         // Stop if we exceed column count
                         if colIndex > Int(cols) {
-                            logger.debug("Warning: row \(totalRows) exceeds column count at cell \(i)")
+                            logger.verbose("Row \(totalRows) exceeds column count at cell \(i)")
                             break
                         }
                     } else {
-                        logger.debug("Failed to decode cell \(i) in row \(totalRows) at offset \(offset)")
+                        logger.verbose("Failed to decode cell \(i) in row \(totalRows) at offset \(offset)")
                         break
                     }
                 }

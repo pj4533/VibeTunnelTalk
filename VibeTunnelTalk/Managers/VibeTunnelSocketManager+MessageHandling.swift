@@ -12,7 +12,7 @@ extension VibeTunnelSocketManager {
             }
 
             if let error = error {
-                self?.logger.error("[VIBETUNNEL] Receive error: \(error.localizedDescription)")
+                self?.logger.error("Receive error: \(error.localizedDescription)")
             }
 
             // Connection complete
@@ -31,7 +31,7 @@ extension VibeTunnelSocketManager {
         while receiveBuffer.count >= 8 {
             // Try to parse header
             guard let header = MessageHeader.parse(from: receiveBuffer) else {
-                logger.error("[VIBETUNNEL] Failed to parse message header")
+                logger.error("Failed to parse message header")
                 receiveBuffer.removeAll()
                 break
             }
@@ -71,7 +71,7 @@ extension VibeTunnelSocketManager {
             if let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
                let code = json["code"] as? String,
                let message = json["message"] as? String {
-                logger.error("[VIBETUNNEL] Error from server: \(code) - \(message)")
+                logger.error("Error from server: \(code) - \(message)")
             }
 
         case .heartbeat:
@@ -92,7 +92,7 @@ extension VibeTunnelSocketManager {
 
         connection?.send(content: message.data, completion: .contentProcessed { [weak self] error in
             if let error = error {
-                self?.logger.error("[VIBETUNNEL] Failed to send heartbeat: \(error.localizedDescription)")
+                self?.logger.error("Failed to send heartbeat: \(error.localizedDescription)")
             }
         })
     }
@@ -100,7 +100,7 @@ extension VibeTunnelSocketManager {
     func handleStateChange(_ state: NWConnection.State) {
         switch state {
         case .ready:
-            logger.info("[VIBETUNNEL] Connected to session: \(self.currentSessionId ?? "unknown")")
+            logger.info("✅ Connected to session: \(self.currentSessionId ?? "unknown")")
             DispatchQueue.main.async {
                 self.isConnected = true
             }
@@ -112,7 +112,7 @@ extension VibeTunnelSocketManager {
             }
 
         case .failed(let error):
-            logger.error("[VIBETUNNEL] Connection failed: \(error.localizedDescription)")
+            logger.error("Connection failed: \(error.localizedDescription)")
             DispatchQueue.main.async {
                 self.isConnected = false
             }
@@ -126,7 +126,7 @@ extension VibeTunnelSocketManager {
             break
 
         case .waiting(let error):
-            logger.warning("[VIBETUNNEL] Connection waiting: \(error.localizedDescription)")
+            logger.warning("Connection waiting: \(error.localizedDescription)")
 
         @unknown default:
             break

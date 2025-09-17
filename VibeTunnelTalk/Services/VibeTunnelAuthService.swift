@@ -66,7 +66,7 @@ class VibeTunnelAuthService: ObservableObject {
     /// Check if VibeTunnel server is running
     @MainActor
     func checkServerStatus() async -> Bool {
-        logger.info("[AUTH] Checking VibeTunnel server status...")
+        logger.debug("Checking VibeTunnel server status...")
 
         let url = URL(string: "http://localhost:4020/api/health")!
 
@@ -74,31 +74,31 @@ class VibeTunnelAuthService: ObservableObject {
             let (data, response) = try await URLSession.shared.data(from: url)
 
             guard let httpResponse = response as? HTTPURLResponse else {
-                logger.error("[AUTH] Invalid response from health check")
+                logger.error("Invalid response from health check")
                 isServerRunning = false
                 authError = .serverNotRunning
                 return false
             }
 
             if httpResponse.statusCode == 200 {
-                logger.info("[AUTH] VibeTunnel server is running")
+                logger.debug("VibeTunnel server is running")
                 isServerRunning = true
                 authError = nil
 
                 // Log health status for debugging
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    logger.debug("[AUTH] Server health: \(json)")
+                    logger.verbose("Server health: \(json)")
                 }
 
                 return true
             } else {
-                logger.error("[AUTH] Server health check failed with status: \(httpResponse.statusCode)")
+                logger.error("Server health check failed with status: \(httpResponse.statusCode)")
                 isServerRunning = false
                 authError = .serverNotRunning
                 return false
             }
         } catch {
-            logger.error("[AUTH] Failed to connect to VibeTunnel server: \(error.localizedDescription)")
+            logger.error("Failed to connect to VibeTunnel server: \(error.localizedDescription)")
             isServerRunning = false
             authError = .serverNotRunning
             return false
@@ -108,7 +108,7 @@ class VibeTunnelAuthService: ObservableObject {
     /// Get current system user
     @MainActor
     func getCurrentUser() async -> String? {
-        logger.info("[AUTH] Getting current system user...")
+        logger.debug("Getting current system user...")
 
         let url = URL(string: "http://localhost:4020/api/auth/current-user")!
 
@@ -117,15 +117,15 @@ class VibeTunnelAuthService: ObservableObject {
 
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
-                logger.warning("[AUTH] Could not get current user")
+                logger.warning("Could not get current user")
                 return nil
             }
 
             let userResponse = try JSONDecoder().decode(CurrentUserResponse.self, from: data)
-            logger.info("[AUTH] Current system user: \(userResponse.userId)")
+            logger.debug("Current system user: \(userResponse.userId)")
             return userResponse.userId
         } catch {
-            logger.error("[AUTH] Failed to get current user: \(error.localizedDescription)")
+            logger.error("Failed to get current user: \(error.localizedDescription)")
             return nil
         }
     }
@@ -133,7 +133,7 @@ class VibeTunnelAuthService: ObservableObject {
     /// Check if authentication is required
     @MainActor
     func checkAuthRequired() async -> Bool {
-        logger.info("[AUTH] Checking if authentication is required...")
+        logger.debug("Checking if authentication is required...")
 
         let url = URL(string: "http://localhost:4020/api/auth/config")!
 
@@ -143,23 +143,23 @@ class VibeTunnelAuthService: ObservableObject {
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
                 // If we can't check, assume auth is required
-                logger.warning("[AUTH] Could not check auth config, assuming auth required")
+                logger.warning("Could not check auth config, assuming auth required")
                 return true
             }
 
             let config = try JSONDecoder().decode(AuthConfig.self, from: data)
 
             if config.noAuth {
-                logger.info("[AUTH] Server running with --no-auth, authentication not required")
+                logger.debug("Server running with --no-auth, authentication not required")
                 isAuthenticated = true
                 authError = .authNotRequired
                 return false
             }
 
-            logger.info("[AUTH] Authentication is required")
+            logger.debug("Authentication is required")
             return true
         } catch {
-            logger.error("[AUTH] Failed to check auth config: \(error.localizedDescription)")
+            logger.error("Failed to check auth config: \(error.localizedDescription)")
             // Assume auth is required if we can't check
             return true
         }
@@ -168,7 +168,7 @@ class VibeTunnelAuthService: ObservableObject {
     /// Authenticate with username and password
     @MainActor
     func authenticate(username: String, password: String) async throws {
-        logger.info("[AUTH] Attempting to authenticate user: \(username)")
+        logger.debug("Attempting to authenticate user: \(username)")
 
         // First check if server is running
         guard await checkServerStatus() else {
@@ -201,7 +201,7 @@ class VibeTunnelAuthService: ObservableObject {
                 let loginResponse = try JSONDecoder().decode(LoginResponse.self, from: data)
 
                 guard loginResponse.success else {
-                    logger.error("[AUTH] Authentication failed: Server returned success=false")
+                    logger.error("Authentication failed: Server returned success=false")
                     throw AuthError.invalidCredentials
                 }
 
@@ -210,29 +210,29 @@ class VibeTunnelAuthService: ObservableObject {
                 self.currentUsername = loginResponse.userId
                 self.tokenLoginTime = Date()
 
-                logger.info("[AUTH] Received JWT token: \(loginResponse.token.prefix(20))...")
+                logger.debug("Received JWT token: \(loginResponse.token.prefix(20))...")
 
                 // Store credentials in Keychain (matching iOS pattern)
                 // This allows auto-reauthentication when token expires
                 if KeychainHelper.saveVibeTunnelCredentials(username: username, password: password) {
-                    logger.info("[AUTH] Credentials saved to Keychain successfully")
+                    logger.debug("Credentials saved to Keychain successfully")
                     self.storedUsername = username
                     self.storedPassword = password
                 } else {
-                    logger.error("[AUTH] Failed to save credentials to Keychain")
+                    logger.error("Failed to save credentials to Keychain")
                 }
 
                 isAuthenticated = true
                 authError = nil
 
-                logger.info("[AUTH] Successfully authenticated as \(loginResponse.userId) using method: \(loginResponse.authMethod ?? "unknown")")
+                logger.info("✅ Successfully authenticated as \(loginResponse.userId) using method: \(loginResponse.authMethod ?? "unknown")")
 
             case 401:
-                logger.error("[AUTH] Authentication failed: Invalid credentials")
+                logger.error("Authentication failed: Invalid credentials")
                 throw AuthError.invalidCredentials
 
             default:
-                logger.error("[AUTH] Authentication failed with status: \(httpResponse.statusCode)")
+                logger.error("Authentication failed with status: \(httpResponse.statusCode)")
                 if let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let errorMessage = errorData["error"] as? String {
                     throw AuthError.networkError(errorMessage)
@@ -244,7 +244,7 @@ class VibeTunnelAuthService: ObservableObject {
             authError = error
             throw error
         } catch {
-            logger.error("[AUTH] Authentication failed: \(error.localizedDescription)")
+            logger.error("Authentication failed: \(error.localizedDescription)")
             let authErr = AuthError.networkError(error.localizedDescription)
             authError = authErr
             throw authErr
@@ -255,7 +255,7 @@ class VibeTunnelAuthService: ObservableObject {
     func getToken() async throws -> String? {
         // Check if authentication is required
         if !(await checkAuthRequired()) {
-            logger.debug("[AUTH] No authentication required, returning nil token")
+            logger.verbose("No authentication required, returning nil token")
             return nil // No token needed
         }
 
@@ -264,21 +264,21 @@ class VibeTunnelAuthService: ObservableObject {
            let loginTime = tokenLoginTime {
             let tokenAge = Date().timeIntervalSince(loginTime)
             if tokenAge < 24 * 60 * 60 { // 24 hours
-                logger.debug("[AUTH] Using valid token from memory (age: \(tokenAge) seconds)")
+                logger.verbose("Using valid token from memory (age: \(tokenAge) seconds)")
                 return token
             } else {
-                logger.info("[AUTH] Token expired (age: \(tokenAge) seconds), attempting re-authentication")
+                logger.debug("Token expired (age: \(tokenAge) seconds), attempting re-authentication")
             }
         }
 
         // Try to re-authenticate with stored credentials (matching iOS pattern)
         if let credentials = KeychainHelper.loadVibeTunnelCredentials() {
-            logger.info("[AUTH] Attempting auto-reauthentication with stored credentials")
+            logger.debug("Attempting auto-reauthentication with stored credentials")
             do {
                 try await authenticate(username: credentials.username, password: credentials.password)
                 return jwtToken
             } catch {
-                logger.error("[AUTH] Auto-reauthentication failed: \(error.localizedDescription)")
+                logger.error("Auto-reauthentication failed: \(error.localizedDescription)")
                 // Clear invalid credentials
                 KeychainHelper.deleteVibeTunnelCredentials()
                 self.storedUsername = nil
@@ -288,7 +288,7 @@ class VibeTunnelAuthService: ObservableObject {
         }
 
         // No valid token or credentials available
-        logger.warning("[AUTH] No valid token or credentials available")
+        logger.warning("No valid token or credentials available")
         isAuthenticated = false
         throw AuthError.tokenExpired
     }
@@ -297,21 +297,21 @@ class VibeTunnelAuthService: ObservableObject {
     /// Returns true if refresh was successful
     @MainActor
     func refreshToken() async -> Bool {
-        logger.info("[AUTH] Attempting to refresh token")
+        logger.debug("Attempting to refresh token")
 
         // Try to re-authenticate with stored credentials (matching iOS pattern)
         if let credentials = KeychainHelper.loadVibeTunnelCredentials() {
             do {
                 try await authenticate(username: credentials.username, password: credentials.password)
-                logger.info("[AUTH] Token refresh successful")
+                logger.debug("Token refresh successful")
                 return true
             } catch {
-                logger.error("[AUTH] Token refresh failed: \(error.localizedDescription)")
+                logger.error("Token refresh failed: \(error.localizedDescription)")
                 return false
             }
         }
 
-        logger.warning("[AUTH] No stored credentials for token refresh")
+        logger.warning("No stored credentials for token refresh")
         return false
     }
 
@@ -338,7 +338,7 @@ class VibeTunnelAuthService: ObservableObject {
         // Clear stored credentials from Keychain (matching iOS pattern)
         KeychainHelper.deleteVibeTunnelCredentials()
 
-        logger.info("[AUTH] User logged out and credentials cleared")
+        logger.info("🚪 User logged out and credentials cleared")
     }
 
     /// Load saved authentication if available
@@ -357,7 +357,7 @@ class VibeTunnelAuthService: ObservableObject {
 
         // Try to authenticate with saved credentials (matching iOS pattern)
         if let credentials = KeychainHelper.loadVibeTunnelCredentials() {
-            logger.info("[AUTH] Found saved credentials for user: \(credentials.username)")
+            logger.debug("Found saved credentials for user: \(credentials.username)")
 
             // Store credentials in memory for potential re-auth
             self.storedUsername = credentials.username
@@ -366,16 +366,16 @@ class VibeTunnelAuthService: ObservableObject {
             do {
                 // Attempt authentication with stored credentials
                 try await authenticate(username: credentials.username, password: credentials.password)
-                logger.info("[AUTH] Successfully authenticated with saved credentials")
+                logger.info("✅ Successfully authenticated with saved credentials")
             } catch {
-                logger.error("[AUTH] Failed to authenticate with saved credentials: \(error.localizedDescription)")
+                logger.error("Failed to authenticate with saved credentials: \(error.localizedDescription)")
                 // Clear invalid credentials
                 KeychainHelper.deleteVibeTunnelCredentials()
                 self.storedUsername = nil
                 self.storedPassword = nil
             }
         } else {
-            logger.info("[AUTH] No saved credentials found")
+            logger.debug("No saved credentials found")
         }
     }
 
@@ -383,7 +383,7 @@ class VibeTunnelAuthService: ObservableObject {
     @MainActor
     func verifyToken() async -> Bool {
         guard let token = jwtToken else {
-            logger.debug("[AUTH] No token to verify")
+            logger.verbose("No token to verify")
             return false
         }
 
@@ -391,7 +391,7 @@ class VibeTunnelAuthService: ObservableObject {
         if let loginTime = tokenLoginTime {
             let tokenAge = Date().timeIntervalSince(loginTime)
             if tokenAge >= 24 * 60 * 60 {
-                logger.info("[AUTH] Token expired by age (\(tokenAge) seconds)")
+                logger.debug("Token expired by age (\(tokenAge) seconds)")
                 return false
             }
         }
@@ -405,23 +405,23 @@ class VibeTunnelAuthService: ObservableObject {
             let (_, response) = try await URLSession.shared.data(for: request)
             if let httpResponse = response as? HTTPURLResponse {
                 if httpResponse.statusCode == 200 {
-                    logger.debug("[AUTH] Token verification successful")
+                    logger.verbose("Token verification successful")
                     return true
                 } else if httpResponse.statusCode == 401 {
-                    logger.warning("[AUTH] Token verification failed - token invalid")
+                    logger.warning("Token verification failed - token invalid")
                     // Try to re-authenticate with stored credentials
                     if await refreshToken() {
-                        logger.info("[AUTH] Successfully refreshed token after verification failure")
+                        logger.debug("Successfully refreshed token after verification failure")
                         return true
                     }
                     return false
                 } else {
-                    logger.warning("[AUTH] Token verification failed with status: \(httpResponse.statusCode)")
+                    logger.warning("Token verification failed with status: \(httpResponse.statusCode)")
                     return false
                 }
             }
         } catch {
-            logger.error("[AUTH] Token verification request failed: \(error.localizedDescription)")
+            logger.error("Token verification request failed: \(error.localizedDescription)")
         }
 
         return false
