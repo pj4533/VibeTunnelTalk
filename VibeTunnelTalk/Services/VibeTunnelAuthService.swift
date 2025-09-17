@@ -12,8 +12,11 @@ class VibeTunnelAuthService: ObservableObject {
     @Published var authError: AuthError?
     @Published var currentUsername: String?
 
+    // Keep JWT token and metadata in memory only (matching iOS pattern)
     private var jwtToken: String?
-    private var tokenExpirationDate: Date?
+    private var tokenLoginTime: Date?
+    private var storedUsername: String?
+    private var storedPassword: String?
 
     enum AuthError: LocalizedError {
         case serverNotRunning
@@ -202,24 +205,22 @@ class VibeTunnelAuthService: ObservableObject {
                     throw AuthError.invalidCredentials
                 }
 
-                // Store token in memory
+                // Store token in memory only (matching iOS pattern)
                 self.jwtToken = loginResponse.token
                 self.currentUsername = loginResponse.userId
-
-                // Calculate expiration date (24 hours from now)
-                self.tokenExpirationDate = Date().addingTimeInterval(86400) // 24 hours
+                self.tokenLoginTime = Date()
 
                 logger.info("[AUTH] Received JWT token: \(loginResponse.token.prefix(20))...")
 
-                // Store token in Keychain
-                if KeychainHelper.saveJWTToken(loginResponse.token) {
-                    logger.info("[AUTH] JWT token saved to Keychain successfully")
+                // Store credentials in Keychain (matching iOS pattern)
+                // This allows auto-reauthentication when token expires
+                if KeychainHelper.saveVibeTunnelCredentials(username: username, password: password) {
+                    logger.info("[AUTH] Credentials saved to Keychain successfully")
+                    self.storedUsername = username
+                    self.storedPassword = password
                 } else {
-                    logger.error("[AUTH] Failed to save JWT token to Keychain")
+                    logger.error("[AUTH] Failed to save credentials to Keychain")
                 }
-
-                // Store username for future sessions
-                UserDefaults.standard.set(username, forKey: "lastUsername")
 
                 isAuthenticated = true
                 authError = nil
@@ -258,26 +259,36 @@ class VibeTunnelAuthService: ObservableObject {
             return nil // No token needed
         }
 
-        // Check if we have a valid token in memory
+        // Check if we have a valid token in memory (matching iOS: 24 hour expiry)
         if let token = jwtToken,
-           let expiration = tokenExpirationDate,
-           expiration > Date() {
-            logger.debug("[AUTH] Using valid token from memory (expires: \(expiration))")
-            return token
+           let loginTime = tokenLoginTime {
+            let tokenAge = Date().timeIntervalSince(loginTime)
+            if tokenAge < 24 * 60 * 60 { // 24 hours
+                logger.debug("[AUTH] Using valid token from memory (age: \(tokenAge) seconds)")
+                return token
+            } else {
+                logger.info("[AUTH] Token expired (age: \(tokenAge) seconds), attempting re-authentication")
+            }
         }
 
-        // Try to load from Keychain
-        if let token = KeychainHelper.loadJWTToken() {
-            logger.debug("[AUTH] Loaded token from Keychain")
-            // We can't verify expiration without decoding the JWT
-            // For now, just use it and handle 401 errors
-            self.jwtToken = token
-            // Don't set expiration since we don't know when it expires
-            return token
+        // Try to re-authenticate with stored credentials (matching iOS pattern)
+        if let credentials = KeychainHelper.loadVibeTunnelCredentials() {
+            logger.info("[AUTH] Attempting auto-reauthentication with stored credentials")
+            do {
+                try await authenticate(username: credentials.username, password: credentials.password)
+                return jwtToken
+            } catch {
+                logger.error("[AUTH] Auto-reauthentication failed: \(error.localizedDescription)")
+                // Clear invalid credentials
+                KeychainHelper.deleteVibeTunnelCredentials()
+                self.storedUsername = nil
+                self.storedPassword = nil
+                throw AuthError.tokenExpired
+            }
         }
 
-        // No valid token available
-        logger.warning("[AUTH] No valid token available")
+        // No valid token or credentials available
+        logger.warning("[AUTH] No valid token or credentials available")
         isAuthenticated = false
         throw AuthError.tokenExpired
     }
@@ -286,31 +297,48 @@ class VibeTunnelAuthService: ObservableObject {
     /// Returns true if refresh was successful
     @MainActor
     func refreshToken() async -> Bool {
-        logger.info("[AUTH] Token refresh requested but automatic refresh not available")
-        // We don't store passwords for security reasons, so can't auto-refresh
-        // User will need to re-authenticate manually
+        logger.info("[AUTH] Attempting to refresh token")
+
+        // Try to re-authenticate with stored credentials (matching iOS pattern)
+        if let credentials = KeychainHelper.loadVibeTunnelCredentials() {
+            do {
+                try await authenticate(username: credentials.username, password: credentials.password)
+                logger.info("[AUTH] Token refresh successful")
+                return true
+            } catch {
+                logger.error("[AUTH] Token refresh failed: \(error.localizedDescription)")
+                return false
+            }
+        }
+
+        logger.warning("[AUTH] No stored credentials for token refresh")
         return false
     }
 
     /// Check if token is expired
     func isTokenExpired() -> Bool {
-        guard let expiration = tokenExpirationDate else {
+        guard let loginTime = tokenLoginTime else {
             return true
         }
-        return expiration <= Date()
+        // Token expires after 24 hours (matching iOS pattern)
+        let tokenAge = Date().timeIntervalSince(loginTime)
+        return tokenAge >= 24 * 60 * 60
     }
 
     /// Clear authentication
     func logout() {
+        // Clear in-memory tokens
         jwtToken = nil
-        tokenExpirationDate = nil
+        tokenLoginTime = nil
         currentUsername = nil
+        storedUsername = nil
+        storedPassword = nil
         isAuthenticated = false
 
-        // Clear from Keychain
-        KeychainHelper.deleteJWTToken()
+        // Clear stored credentials from Keychain (matching iOS pattern)
+        KeychainHelper.deleteVibeTunnelCredentials()
 
-        logger.info("[AUTH] User logged out")
+        logger.info("[AUTH] User logged out and credentials cleared")
     }
 
     /// Load saved authentication if available
@@ -327,97 +355,75 @@ class VibeTunnelAuthService: ObservableObject {
             return
         }
 
-        // Try to load saved token
-        if let token = KeychainHelper.loadJWTToken() {
-            self.jwtToken = token
-            self.currentUsername = UserDefaults.standard.string(forKey: "lastUsername")
+        // Try to authenticate with saved credentials (matching iOS pattern)
+        if let credentials = KeychainHelper.loadVibeTunnelCredentials() {
+            logger.info("[AUTH] Found saved credentials for user: \(credentials.username)")
 
-            // We can't verify without decoding JWT, so assume it's valid
-            // and handle 401 errors when they occur
-            isAuthenticated = true
+            // Store credentials in memory for potential re-auth
+            self.storedUsername = credentials.username
+            self.storedPassword = credentials.password
 
-            logger.info("[AUTH] Loaded saved authentication for user: \(self.currentUsername ?? "unknown")")
+            do {
+                // Attempt authentication with stored credentials
+                try await authenticate(username: credentials.username, password: credentials.password)
+                logger.info("[AUTH] Successfully authenticated with saved credentials")
+            } catch {
+                logger.error("[AUTH] Failed to authenticate with saved credentials: \(error.localizedDescription)")
+                // Clear invalid credentials
+                KeychainHelper.deleteVibeTunnelCredentials()
+                self.storedUsername = nil
+                self.storedPassword = nil
+            }
+        } else {
+            logger.info("[AUTH] No saved credentials found")
         }
     }
-}
 
-// Extend KeychainHelper to handle JWT tokens
-extension KeychainHelper {
-    private static let jwtService = "com.vibetunneltalk.jwt"
-    private static let jwtTokenKey = "VibeTunnelJWTToken"
-
-    static func saveJWTToken(_ token: String) -> Bool {
-        // Clean the token: remove newlines and trim whitespace
-        let cleanedToken = token
-            .replacingOccurrences(of: "\n", with: "")
-            .replacingOccurrences(of: "\r", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard let data = cleanedToken.data(using: .utf8) else {
-            AppLogger.auth.error("[KEYCHAIN] Failed to convert token to data")
+    /// Verify if current token is still valid (matching iOS pattern)
+    @MainActor
+    func verifyToken() async -> Bool {
+        guard let token = jwtToken else {
+            logger.debug("[AUTH] No token to verify")
             return false
         }
 
-        // Delete any existing item first
-        deleteJWTToken()
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: jwtService,
-            kSecAttrAccount as String: jwtTokenKey,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
-        ]
-
-        let status = SecItemAdd(query as CFDictionary, nil)
-
-        if status == errSecSuccess {
-            AppLogger.auth.info("[KEYCHAIN] JWT token saved successfully")
-            return true
-        } else {
-            AppLogger.auth.error("[KEYCHAIN] Failed to save JWT token: \(status)")
-            return false
-        }
-    }
-
-    static func loadJWTToken() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: jwtService,
-            kSecAttrAccount as String: jwtTokenKey,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-        if status == errSecSuccess,
-           let data = result as? Data,
-           let token = String(data: data, encoding: .utf8) {
-            AppLogger.auth.info("[KEYCHAIN] JWT token loaded successfully")
-            return token
-        } else if status == errSecItemNotFound {
-            AppLogger.auth.debug("[KEYCHAIN] No JWT token found in keychain")
-        } else {
-            AppLogger.auth.error("[KEYCHAIN] Failed to load JWT token: \(status)")
+        // First check token age (matching iOS: 24 hour expiry)
+        if let loginTime = tokenLoginTime {
+            let tokenAge = Date().timeIntervalSince(loginTime)
+            if tokenAge >= 24 * 60 * 60 {
+                logger.info("[AUTH] Token expired by age (\(tokenAge) seconds)")
+                return false
+            }
         }
 
-        return nil
-    }
+        let url = URL(string: "http://localhost:4020/api/auth/verify")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-    static func deleteJWTToken() {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: jwtService,
-            kSecAttrAccount as String: jwtTokenKey
-        ]
-
-        let status = SecItemDelete(query as CFDictionary)
-        if status == errSecSuccess || status == errSecItemNotFound {
-            AppLogger.auth.debug("[KEYCHAIN] JWT token deleted or not found")
-        } else {
-            AppLogger.auth.error("[KEYCHAIN] Failed to delete JWT token: \(status)")
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse {
+                if httpResponse.statusCode == 200 {
+                    logger.debug("[AUTH] Token verification successful")
+                    return true
+                } else if httpResponse.statusCode == 401 {
+                    logger.warning("[AUTH] Token verification failed - token invalid")
+                    // Try to re-authenticate with stored credentials
+                    if await refreshToken() {
+                        logger.info("[AUTH] Successfully refreshed token after verification failure")
+                        return true
+                    }
+                    return false
+                } else {
+                    logger.warning("[AUTH] Token verification failed with status: \(httpResponse.statusCode)")
+                    return false
+                }
+            }
+        } catch {
+            logger.error("[AUTH] Token verification request failed: \(error.localizedDescription)")
         }
+
+        return false
     }
 }
