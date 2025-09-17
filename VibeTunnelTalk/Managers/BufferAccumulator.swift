@@ -73,29 +73,66 @@ class BufferAccumulator {
             return
         }
 
-        // Check if terminal was cleared (new content is significantly shorter or very different)
+        // Check if terminal was cleared or significantly changed
         let wasCleared = detectTerminalClear(from: lastTranscriptSnapshot, to: newContent)
 
         if wasCleared {
-            // Terminal was cleared - append old content to transcript before adding new
-            logger.info("[ACCUMULATOR] Terminal clear detected - preserving history")
+            // Terminal was cleared/scrolled - preserve ALL previous content
+            logger.info("[ACCUMULATOR] Terminal clear/scroll detected - preserving \(self.lastTranscriptSnapshot.count) chars of history")
 
-            // If transcript doesn't already end with the last snapshot, append it
-            if !sessionTranscript.hasSuffix(lastTranscriptSnapshot) {
-                sessionTranscript += "\n" + lastTranscriptSnapshot
+            // Always append the entire last snapshot to preserve it
+            if !lastTranscriptSnapshot.isEmpty {
+                // Only add if transcript doesn't already end with this content
+                if !sessionTranscript.hasSuffix(lastTranscriptSnapshot) {
+                    // Add separator and previous content
+                    if !sessionTranscript.isEmpty {
+                        sessionTranscript += "\n"
+                    }
+                    sessionTranscript += lastTranscriptSnapshot
+                }
+
+                // Add a marker to indicate terminal was cleared/scrolled
+                sessionTranscript += "\n...\n"
             }
-
-            // Add a concise marker to indicate terminal was cleared
-            sessionTranscript += "\n...\n"
 
             // Add the new content
             sessionTranscript += newContent
         } else {
-            // Normal update - find what's truly new and append only that
-            let newPortion = extractNewContent(from: lastTranscriptSnapshot, to: newContent)
-            if !newPortion.isEmpty {
-                sessionTranscript += newPortion
-                logger.debug("[ACCUMULATOR] Appended \(newPortion.count) new chars to transcript")
+            // Normal incremental update - but be more careful about what's "new"
+            // The terminal might have content that partially overlaps
+
+            // If the new content completely contains the old content at the start
+            if newContent.hasPrefix(lastTranscriptSnapshot) {
+                // Just append what comes after
+                let newPortion = String(newContent.dropFirst(lastTranscriptSnapshot.count))
+                if !newPortion.isEmpty {
+                    sessionTranscript += newPortion
+                    logger.debug("[ACCUMULATOR] Appended \(newPortion.count) new chars (content extended)")
+                }
+            } else {
+                // Content has changed in a complex way - might be partial overwrite
+                // In this case, we should preserve the old content and add the new
+                let commonPrefix = zip(lastTranscriptSnapshot, newContent).prefix(while: { $0 == $1 }).count
+
+                if commonPrefix < lastTranscriptSnapshot.count / 2 {
+                    // Less than half matches - treat as significant change
+                    logger.info("[ACCUMULATOR] Significant content change detected (only \(commonPrefix) chars common)")
+
+                    // Preserve old content if it's substantial
+                    if lastTranscriptSnapshot.count > 50 && !sessionTranscript.hasSuffix(lastTranscriptSnapshot) {
+                        sessionTranscript += "\n" + lastTranscriptSnapshot + "\n...\n"
+                    }
+
+                    // Add new content
+                    sessionTranscript += newContent
+                } else {
+                    // Mostly the same, just append the different part
+                    let newPortion = String(newContent.dropFirst(commonPrefix))
+                    if !newPortion.isEmpty {
+                        sessionTranscript += newPortion
+                        logger.debug("[ACCUMULATOR] Appended \(newPortion.count) new chars (partial update)")
+                    }
+                }
             }
         }
 
@@ -106,39 +143,40 @@ class BufferAccumulator {
     /// Detect if terminal was cleared based on content comparison
     private func detectTerminalClear(from old: String, to new: String) -> Bool {
         // Terminal clear indicators:
-        // 1. New content is significantly shorter (>50% reduction)
+        // 1. New content is significantly shorter (>30% reduction)
         // 2. Common prefix is very small relative to old content
+        // 3. Content appears to be completely different
 
         if old.isEmpty { return false }
 
-        // Check for significant size reduction
+        // Check for significant size reduction (lowered threshold to catch more cases)
         let sizeReduction = Double(old.count - new.count) / Double(old.count)
-        if sizeReduction > 0.5 {
+        if sizeReduction > 0.3 && old.count > 100 {  // 30% reduction for substantial content
+            logger.debug("[ACCUMULATOR] Terminal clear detected: size reduced by \(Int(sizeReduction * 100))%")
             return true
         }
 
         // Check for minimal common prefix (terminal was cleared and rewritten)
         let commonPrefix = zip(old, new).prefix(while: { $0 == $1 }).count
         let prefixRatio = Double(commonPrefix) / Double(old.count)
-        if prefixRatio < 0.1 && new.count > 10 {  // Less than 10% common and new content exists
+
+        // Be more aggressive about detecting changes
+        if prefixRatio < 0.2 && new.count > 10 {  // Less than 20% common and new content exists
+            logger.debug("[ACCUMULATOR] Terminal clear detected: only \(Int(prefixRatio * 100))% prefix matches")
+            return true
+        }
+
+        // Also check if the content is completely different at the end
+        // This catches cases where the terminal scrolled and only the prompt remains
+        if old.count > 100 && new.count < 100 {
+            // Large content replaced with small content (like just a prompt)
+            logger.debug("[ACCUMULATOR] Terminal clear detected: large content (\(old.count) chars) replaced with small (\(new.count) chars)")
             return true
         }
 
         return false
     }
 
-    /// Extract only the new content that was added
-    private func extractNewContent(from old: String, to new: String) -> String {
-        // Find the longest common prefix
-        let commonPrefixLength = zip(old, new).prefix(while: { $0 == $1 }).count
-
-        // Everything after the common prefix is new
-        if commonPrefixLength < new.count {
-            return String(new.suffix(new.count - commonPrefixLength))
-        }
-
-        return ""
-    }
 
     private func checkThresholds() {
         // Don't flush empty content
