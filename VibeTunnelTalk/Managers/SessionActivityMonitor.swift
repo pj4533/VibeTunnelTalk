@@ -387,44 +387,41 @@ class SessionActivityMonitor: ObservableObject {
         var activityContext = ""
         switch currentActivity {
         case .task(let name):
-            activityContext = "Claude is working on task: \(name)"
+            activityContext = "Working on: \(name)"
         case .analyzing:
-            activityContext = "Claude is analyzing the codebase"
+            activityContext = "Analyzing the codebase"
         case .readingFiles:
-            activityContext = "Claude is reading files"
+            activityContext = "Reading files"
         case .writingCode:
-            activityContext = "Claude is modifying code"
+            activityContext = "Modifying code"
         case .runningCommand:
-            activityContext = "Claude is running a command"
+            activityContext = "Running a command"
         case .searching:
-            activityContext = "Claude is searching for information"
+            activityContext = "Searching"
         case .thinking:
-            activityContext = "Claude is thinking about the approach"
+            activityContext = "Planning approach"
         case .idle:
             activityContext = ""
         }
 
         return """
-        Terminal output from Claude Code session:
-        \(activityContext.isEmpty ? "" : "\nCurrent activity: \(activityContext)\n")
+        Terminal output:
+        \(activityContext.isEmpty ? "" : "\(activityContext)\n")
         ```
         \(filteredContent)
         ```
 
-        Provide a brief, natural narration (1-2 sentences) about what's happening.
+        ALWAYS use "we". NEVER say "Claude", "the system", "the terminal", etc.
 
-        Focus on:
-        - If Claude just started a task, mention what the task is
-        - If Claude is modifying files, mention what's being changed
-        - If there's an error or success, mention the outcome
-        - If Claude completed something, summarize what was accomplished
+        If output is brief: 1-2 short sentences about what we're doing.
+        If output contains significant results, errors, or answers: Summarize in detail:
+        - For build errors: Describe the specific errors found
+        - For search results: Describe what was actually found
+        - For test results: State how many passed/failed and what failed
+        - For answers to questions: State the actual answer
+        - For command output: Describe the important parts of the output
 
-        Keep it conversational and concise. Don't repeat obvious information.
-        Example good narrations:
-        - "Claude is starting to analyze the project structure"
-        - "Claude found several files and is now examining the code"
-        - "Looks like Claude is updating the configuration files"
-        - "Claude completed the analysis and found what was needed"
+        Focus on the CONTENT and RESULTS, not just that something completed.
         """
     }
 
