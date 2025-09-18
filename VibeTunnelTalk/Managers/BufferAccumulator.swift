@@ -40,7 +40,7 @@ class BufferAccumulator {
         // Convert the buffer content to lines for comparison
         let currentBufferLines = extractedContent.components(separatedBy: .newlines)
 
-        // Check for both new content AND changed content
+        // Check for content changes with improved scrollback detection
         let (newContent, hasInPlaceChanges) = findContentChanges(from: previousBufferLines, to: currentBufferLines)
 
         if !newContent.isEmpty {
@@ -79,9 +79,29 @@ class BufferAccumulator {
                 logger.info("⏱️ Starting accumulation period for in-place update")
             }
         } else {
-            // Log when we find no new content (this might be the issue)
-            if totalSnapshotsProcessed % 10 == 0 {
-                logger.debug("🔄 No significant changes in snapshot #\(self.totalSnapshotsProcessed)")
+            // FALLBACK: If our smart detection missed something, check if buffer content changed significantly
+            // This is a safety net for cases where scrolling happens so fast we can't track it
+            if changeCount > 50 { // Significant change threshold
+                logger.info("🔄 Significant buffer change detected (\(changeCount) chars), including full buffer state")
+
+                let fullContent = currentBufferLines.joined(separator: "\n")
+                if !fullContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let safetyContent = "\n[Buffer State Update - \(changeCount) chars changed]\n" + fullContent + "\n"
+
+                    sessionTranscript += safetyContent
+                    pendingContent += safetyContent
+                    pendingContentSize += safetyContent.count
+
+                    if firstAccumulationTime == nil {
+                        firstAccumulationTime = Date()
+                        logger.info("⏱️ Starting accumulation period for safety buffer")
+                    }
+                }
+            } else {
+                // Log when we find no new content
+                if totalSnapshotsProcessed % 10 == 0 {
+                    logger.debug("🔄 No significant changes in snapshot #\(self.totalSnapshotsProcessed)")
+                }
             }
         }
 
@@ -101,7 +121,10 @@ class BufferAccumulator {
     // Add minimum change threshold
     private let minChangeThreshold = 5
 
-    /// Find both new content and in-place changes by comparing consecutive buffer snapshots
+    // Scrollback tracking for better content capture
+    private var fullBufferHistory: [String] = []  // Keep a longer history for analysis
+
+    /// Find meaningful content changes with improved scrollback detection
     private func findContentChanges(from oldLines: [String], to newLines: [String]) -> (newContent: String, hasInPlaceChanges: Bool) {
         // First buffer - everything is new
         if oldLines.isEmpty {
@@ -112,88 +135,237 @@ class BufferAccumulator {
             return ("", false)
         }
 
-        // Check for in-place changes first (same number of lines but different content)
-        if oldLines.count == newLines.count {
-            var hasChanges = false
-            for (oldLine, newLine) in zip(oldLines, newLines) {
-                if oldLine != newLine {
-                    hasChanges = true
-                    break
-                }
-            }
+        // IMPROVED APPROACH: Track all content that appears, handle scrolling better
 
-            if hasChanges {
-                // Lines are in the same positions but content changed
-                return ("", true)
+        // Case 1: More lines (new content added)
+        if newLines.count > oldLines.count {
+            let linesDiff = newLines.count - oldLines.count
+
+            // Check if old content appears at beginning (simple append case)
+            let oldPrefix = Array(newLines.prefix(oldLines.count))
+            if oldPrefix == oldLines {
+                // Simple append - new lines added at bottom
+                let newLinesAdded = Array(newLines.suffix(linesDiff))
+                let newContent = newLinesAdded.joined(separator: "\n")
+                if !newContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return (newContent + "\n", false)
+                }
+            } else {
+                // Content scrolled - find overlap and extract all new lines
+                let newContent = detectScrollingContent(oldLines: oldLines, newLines: newLines)
+                if !newContent.isEmpty {
+                    return (newContent, false)
+                }
             }
         }
 
-        // Find the overlap between old and new buffers
-        // This handles scrolling where lines shift up
+        // Case 2: Same number of lines (in-place changes)
+        else if oldLines.count == newLines.count {
+            let meaningfulChanges = detectMeaningfulInPlaceChanges(oldLines: oldLines, newLines: newLines)
+            if !meaningfulChanges.isEmpty {
+                return (meaningfulChanges, false)
+            }
 
-        // Strategy: Find where the old buffer's content appears in the new buffer
-        // Example: old=[A,B,C,D], new=[B,C,D,E] -> E is new
-        //         old=[A,B,C,D], new=[C,D,E,F] -> E,F are new
+            // Check for noise/animation changes
+            if hasOnlyNoiseChanges(oldLines: oldLines, newLines: newLines) {
+                return ("", false)
+            }
+        }
 
-        var newContent = ""
-        var foundOverlap = false
+        // Case 3: Fewer lines (cleared or major change)
+        else if newLines.count < oldLines.count {
+            // Likely a clear screen or major content change
+            let content = newLines.joined(separator: "\n")
+            if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return ("\n[Terminal Cleared]\n" + content + "\n", false)
+            }
+        }
 
-        // Look for where the old buffer ends within the new buffer
-        for i in 0..<newLines.count {
-            // Check if the remaining old lines match the beginning of new[i...]
-            let remainingNew = Array(newLines[i...])
+        return ("", false)
+    }
 
-            // Find the longest suffix of old that matches a prefix of remainingNew
-            for j in (0..<oldLines.count).reversed() {
-                let oldSuffix = Array(oldLines[j...])
+    /// Detect new content when old content has scrolled (improved algorithm)
+    private func detectScrollingContent(oldLines: [String], newLines: [String]) -> String {
+        // This is the key improvement: capture ALL content that appeared,
+        // not just what's visible at the end
 
-                if remainingNew.starts(with: oldSuffix) {
-                    // Found overlap! Everything after this overlap is new
-                    foundOverlap = true
-                    let newStartIndex = i + oldSuffix.count
+        // Strategy: Find the best overlap between old and new content,
+        // then capture everything that's new
 
-                    if newStartIndex < newLines.count {
-                        let newLineContent = Array(newLines[newStartIndex...])
-                        newContent = newLineContent.joined(separator: "\n")
-                        if !newContent.isEmpty {
-                            newContent += "\n"
+        var allNewContent: [String] = []
+
+        // First, try to find where old content appears in new buffer
+        let overlapFound = findContentOverlap(oldLines: oldLines, newLines: newLines)
+
+        if let (overlapStart, overlapLength) = overlapFound {
+            // We found where old content appears in new buffer
+
+            // Content before the overlap is new (scrolled content)
+            if overlapStart > 0 {
+                let scrolledContent = Array(newLines[0..<overlapStart])
+                allNewContent.append(contentsOf: scrolledContent)
+            }
+
+            // Content after the overlap is new (appended content)
+            let afterOverlapStart = overlapStart + overlapLength
+            if afterOverlapStart < newLines.count {
+                let appendedContent = Array(newLines[afterOverlapStart...])
+                allNewContent.append(contentsOf: appendedContent)
+            }
+        } else {
+            // No clear overlap found - treat all new lines as potentially new content
+            // This handles cases where there's significant scrolling
+
+            // Find any lines that weren't in the old buffer
+            for newLine in newLines {
+                if !oldLines.contains(newLine) {
+                    allNewContent.append(newLine)
+                }
+            }
+        }
+
+        // Filter and return new content
+        let newContentText = allNewContent.joined(separator: "\n")
+        if !newContentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return newContentText + "\n"
+        }
+
+        return ""
+    }
+
+    /// Find the best overlap between old and new content
+    private func findContentOverlap(oldLines: [String], newLines: [String]) -> (start: Int, length: Int)? {
+        let minOverlapLength = min(3, oldLines.count) // Minimum overlap to consider valid
+        var bestOverlap: (start: Int, length: Int)? = nil
+
+        // Try different overlap lengths, starting with longer ones
+        for overlapLength in stride(from: min(oldLines.count, newLines.count), through: minOverlapLength, by: -1) {
+
+            // Try different positions in old content
+            for oldStart in 0...(oldLines.count - overlapLength) {
+                let oldSlice = Array(oldLines[oldStart..<(oldStart + overlapLength)])
+
+                // Try to find this slice in new content
+                for newStart in 0...(newLines.count - overlapLength) {
+                    let newSlice = Array(newLines[newStart..<(newStart + overlapLength)])
+
+                    if oldSlice == newSlice {
+                        // Found a match - prefer longer overlaps and earlier positions
+                        if bestOverlap == nil || overlapLength > bestOverlap!.length {
+                            bestOverlap = (start: newStart, length: overlapLength)
                         }
                     }
-                    break
                 }
             }
-            if foundOverlap { break }
-        }
 
-        // If no overlap found, check if new extends old (content added at bottom)
-        if !foundOverlap {
-            // Check if new buffer starts with the end of old buffer
-            for i in 0..<oldLines.count {
-                let oldSuffix = Array(oldLines[i...])
-                if newLines.starts(with: oldSuffix) {
-                    // New content was added after old
-                    let newStartIndex = oldSuffix.count
-                    if newStartIndex < newLines.count {
-                        let newLineContent = Array(newLines[newStartIndex...])
-                        newContent = newLineContent.joined(separator: "\n")
-                        if !newContent.isEmpty {
-                            newContent += "\n"
-                        }
-                    }
-                    foundOverlap = true
-                    break
-                }
+            // If we found a good overlap, use it
+            if bestOverlap != nil && bestOverlap!.length >= overlapLength {
+                break
             }
         }
 
-        // If still no overlap, terminal was likely cleared or completely changed
-        if !foundOverlap && !newLines.joined().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            logger.debug("No overlap found - terminal likely cleared or completely changed")
-            // This is considered new content, not in-place change
-            newContent = "\n---\n" + newLines.joined(separator: "\n") + "\n"
+        return bestOverlap
+    }
+
+    /// Detect meaningful in-place changes (avoiding noise)
+    private func detectMeaningfulInPlaceChanges(oldLines: [String], newLines: [String]) -> String {
+        var meaningfulChanges: [String] = []
+
+        for (index, (oldLine, newLine)) in zip(oldLines, newLines).enumerated() {
+            if oldLine != newLine {
+                // Check if this change looks meaningful
+                if isMeaningfulLineChange(from: oldLine, to: newLine) {
+                    meaningfulChanges.append("Line \(index + 1): \(newLine)")
+                }
+            }
         }
 
-        return (newContent, false)
+        if !meaningfulChanges.isEmpty {
+            return "\n[Content Updated]\n" + meaningfulChanges.joined(separator: "\n") + "\n"
+        }
+
+        return ""
+    }
+
+    /// Check if changes are just noise/animations that should be ignored
+    private func hasOnlyNoiseChanges(oldLines: [String], newLines: [String]) -> Bool {
+        for (oldLine, newLine) in zip(oldLines, newLines) {
+            if oldLine != newLine {
+                if isMeaningfulLineChange(from: oldLine, to: newLine) {
+                    return false // Found at least one meaningful change
+                }
+            }
+        }
+        return true // All changes are noise
+    }
+
+    /// Determine if a line change is meaningful or just noise
+    private func isMeaningfulLineChange(from oldLine: String, to newLine: String) -> Bool {
+        let oldTrimmed = oldLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newTrimmed = newLine.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Ignore empty line changes
+        if oldTrimmed.isEmpty && newTrimmed.isEmpty {
+            return false
+        }
+
+        // Check for common noise patterns
+        if isLikelyNoise(oldTrimmed) && isLikelyNoise(newTrimmed) {
+            return false
+        }
+
+        // If one line is significantly longer than the other, it's probably meaningful
+        let lengthDiff = abs(newTrimmed.count - oldTrimmed.count)
+        if lengthDiff > 10 {
+            return true
+        }
+
+        // Check for cursor/progress indicator patterns
+        if isProgressIndicator(oldTrimmed) || isProgressIndicator(newTrimmed) {
+            return false
+        }
+
+        // Default to meaningful if we can't classify it as noise
+        return true
+    }
+
+    /// Check if a line looks like noise (animations, cursors, etc.)
+    private func isLikelyNoise(_ line: String) -> Bool {
+        // Empty or very short lines
+        if line.count < 3 {
+            return true
+        }
+
+        // Lines with only special characters (cursors, borders, etc.)
+        let specialChars = CharacterSet(charactersIn: "|-+*/\\═║╠╣╦╩╬█▄▀▐▌▋▊▉░▒▓◄►▲▼◆◇○●◦·‧…⋮⋯⁞")
+        if line.rangeOfCharacter(from: specialChars.inverted) == nil {
+            return true
+        }
+
+        return false
+    }
+
+    /// Check if a line looks like a progress indicator
+    private func isProgressIndicator(_ line: String) -> Bool {
+        // Look for patterns like progress bars, percentages, etc.
+        let progressPatterns = [
+            "\\d+%",  // Percentages
+            "\\[#+[\\s-]*\\]",  // Progress bars [###   ]
+            "\\d+/\\d+",  // Fraction progress
+            "[▓▒░]+",  // Block progress bars
+            "\\.\\.\\.*",  // Loading dots
+            "Loading|loading",
+            "Processing|processing",
+            "\\|\\-\\\\\\/"  // Spinner characters
+        ]
+
+        for pattern in progressPatterns {
+            if line.range(of: pattern, options: .regularExpression) != nil {
+                return true
+            }
+        }
+
+        return false
     }
 
     private func checkThresholds() {
