@@ -2,8 +2,8 @@ import Foundation
 import Combine
 import OSLog
 
-/// View model that bridges WebSocket buffer updates to SwiftUI views
-/// Replaces the deprecated REST API polling with real-time WebSocket subscriptions
+/// View model that passively observes WebSocket buffer updates for display in SwiftUI views
+/// This is a read-only observer that doesn't manage the WebSocket connection lifecycle
 @MainActor
 class TerminalBufferViewModel: ObservableObject {
     private let logger = AppLogger.ui
@@ -48,43 +48,47 @@ class TerminalBufferViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    /// Starts receiving buffer updates for a specific session
-    func startReceivingUpdates(for sessionId: String) {
+    /// Start observing buffer updates for a specific session
+    /// This is a passive observer - it doesn't manage the WebSocket connection
+    func startObserving(sessionId: String) {
         self.sessionId = sessionId
         self.isLoading = true
         self.error = nil
 
-        logger.info("Starting to receive updates for session: \(sessionId)")
+        logger.info("Starting to observe buffer updates for session: \(sessionId)")
 
         // Use the shared BufferWebSocketClient instance
         bufferClient = BufferWebSocketClient.shared
 
-        // Connect if not already connected
-        if !bufferClient!.isConnected {
-            logger.info("WebSocket not connected, initiating connection")
-            bufferClient?.connect()
-        } else {
-            // Already connected, subscribe immediately
+        // The WebSocket connection should already be established by VibeTunnelSocketManager
+        // We're just adding another observer to the existing stream
+        if bufferClient!.isConnected {
             subscribeToSession(sessionId)
+        } else {
+            logger.warning("WebSocket not connected - waiting for connection from main service")
+            // Connection will be handled by observeBufferClient when it comes online
         }
     }
 
     /// Subscribes to buffer updates for the current session
+    /// This adds an additional observer to the existing WebSocket stream
     private func subscribeToSession(_ sessionId: String) {
         guard let bufferClient else {
             logger.error("No buffer client available for subscription")
             return
         }
 
-        logger.info("Subscribing to session: \(sessionId)")
+        logger.info("Adding observer for session: \(sessionId)")
 
+        // Add this view model as an additional observer
+        // The WebSocket connection and session subscription are managed elsewhere
         bufferClient.subscribe(to: sessionId) { [weak self] event in
             Task { @MainActor [weak self] in
                 guard let self else { return }
 
                 switch event {
                 case .bufferUpdate(let snapshot):
-                    self.logger.debug("Received buffer update: \(snapshot.cols)x\(snapshot.rows)")
+                    self.logger.debug("Terminal view received buffer: \(snapshot.cols)x\(snapshot.rows)")
                     self.currentBuffer = snapshot
                     self.isLoading = false
                     self.error = nil
@@ -104,16 +108,18 @@ class TerminalBufferViewModel: ObservableObject {
         }
     }
 
-    /// Stops receiving updates and cleans up subscriptions
-    func stopReceivingUpdates() {
+    /// Stop observing - only clears local state, doesn't affect the connection
+    /// The WebSocket connection continues running for other observers
+    private func stopObserving() {
         guard let sessionId else { return }
 
-        logger.info("Stopping updates for session: \(sessionId)")
+        logger.info("Terminal view stopping observation of session: \(sessionId)")
 
-        // Unsubscribe from the session
-        bufferClient?.unsubscribe(from: sessionId)
+        // Note: We do NOT unsubscribe from the WebSocket here
+        // The connection should remain active for SmartTerminalProcessor
+        // We just clear our local state
 
-        // Clear state
+        // Clear local state only
         self.sessionId = nil
         self.bufferClient = nil
         self.currentBuffer = nil
@@ -121,7 +127,7 @@ class TerminalBufferViewModel: ObservableObject {
     }
 
     deinit {
-        // Clean up is handled when the view disappears via stopReceivingUpdates()
-        // We can't call @MainActor methods from deinit
+        // No cleanup needed - we're just a passive observer
+        // The WebSocket connection is managed by VibeTunnelSocketManager
     }
 }

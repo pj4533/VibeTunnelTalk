@@ -99,11 +99,11 @@ class SmartTerminalProcessor: ObservableObject {
     private func processWebSocketSnapshot(_ snapshot: BufferSnapshot) {
         totalSnapshotsProcessed += 1
 
-        logger.verbose("Processing snapshot #\(self.totalSnapshotsProcessed)")
+        // Processing snapshot
 
         // Extract text content from buffer
         let currentContent = extractTextFromBuffer(snapshot)
-        logger.verbose("Extracted \(currentContent.count) characters")
+        // Content extracted
 
         // Check if content has changed from what we last sent
         let changeCount = countChanges(from: lastSentContent, to: currentContent)

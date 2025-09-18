@@ -5,6 +5,7 @@ import OSLog
 /// Designed specifically for WebSocket's continuous buffer snapshots, not polling
 class BufferAccumulator {
     private let logger = AppLogger.accumulator
+    private var totalSnapshotsProcessed = 0
 
     // Configuration
     let sizeThreshold: Int         // Characters to accumulate before sending
@@ -39,11 +40,11 @@ class BufferAccumulator {
         // Convert the buffer content to lines for comparison
         let currentBufferLines = extractedContent.components(separatedBy: .newlines)
 
-        // Find what's truly NEW in this buffer compared to the previous one
-        let newContent = findNewContent(from: previousBufferLines, to: currentBufferLines)
+        // Check for both new content AND changed content
+        let (newContent, hasInPlaceChanges) = findContentChanges(from: previousBufferLines, to: currentBufferLines)
 
         if !newContent.isEmpty {
-            logger.verbose("Found \(newContent.count) chars of new content")
+            logger.info("📝 Found \(newContent.count) chars of NEW content (pending: \(self.pendingContentSize))")
 
             // Add to session transcript
             sessionTranscript += newContent
@@ -55,26 +56,76 @@ class BufferAccumulator {
             // Start accumulation timer if this is the first content
             if firstAccumulationTime == nil {
                 firstAccumulationTime = Date()
-                logger.verbose("Starting accumulation period")
+                logger.info("⏱️ Starting accumulation period")
+            }
+        } else if hasInPlaceChanges && changeCount > minChangeThreshold {
+            // Handle in-place updates (like progress indicators, status updates)
+            logger.info("🔄 Detected \(changeCount) chars of in-place changes")
+
+            // For in-place changes, send the entire current buffer content
+            // This ensures OpenAI sees the updated state
+            let fullContent = currentBufferLines.joined(separator: "\n")
+
+            // Add a marker to indicate this is an update, not new content
+            let updateContent = "\n[Buffer Update]\n" + fullContent + "\n"
+
+            sessionTranscript += updateContent
+            pendingContent += updateContent
+            pendingContentSize += updateContent.count
+
+            // Start accumulation timer if needed
+            if firstAccumulationTime == nil {
+                firstAccumulationTime = Date()
+                logger.info("⏱️ Starting accumulation period for in-place update")
+            }
+        } else {
+            // Log when we find no new content (this might be the issue)
+            if totalSnapshotsProcessed % 10 == 0 {
+                logger.debug("🔄 No significant changes in snapshot #\(self.totalSnapshotsProcessed)")
             }
         }
 
         // Update our previous buffer for next comparison
         previousBufferLines = currentBufferLines
 
+        // Debug: Log accumulator state periodically
+        totalSnapshotsProcessed += 1
+        if totalSnapshotsProcessed % 10 == 0 {
+            logger.info("📊 Accumulator state: pending=\(self.pendingContentSize) chars, transcript=\(self.sessionTranscript.count) chars, sent=\(self.lastSentIndex) chars")
+        }
+
         // Check if we should flush based on thresholds
         checkThresholds()
     }
 
-    /// Find truly new content by comparing consecutive buffer snapshots
-    private func findNewContent(from oldLines: [String], to newLines: [String]) -> String {
+    // Add minimum change threshold
+    private let minChangeThreshold = 5
+
+    /// Find both new content and in-place changes by comparing consecutive buffer snapshots
+    private func findContentChanges(from oldLines: [String], to newLines: [String]) -> (newContent: String, hasInPlaceChanges: Bool) {
         // First buffer - everything is new
         if oldLines.isEmpty {
             let content = newLines.joined(separator: "\n")
             if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return content + "\n"
+                return (content + "\n", false)
             }
-            return ""
+            return ("", false)
+        }
+
+        // Check for in-place changes first (same number of lines but different content)
+        if oldLines.count == newLines.count {
+            var hasChanges = false
+            for (oldLine, newLine) in zip(oldLines, newLines) {
+                if oldLine != newLine {
+                    hasChanges = true
+                    break
+                }
+            }
+
+            if hasChanges {
+                // Lines are in the same positions but content changed
+                return ("", true)
+            }
         }
 
         // Find the overlap between old and new buffers
@@ -137,12 +188,12 @@ class BufferAccumulator {
 
         // If still no overlap, terminal was likely cleared or completely changed
         if !foundOverlap && !newLines.joined().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            logger.debug("No overlap found - terminal likely cleared")
-            // Add a separator to indicate discontinuity
+            logger.debug("No overlap found - terminal likely cleared or completely changed")
+            // This is considered new content, not in-place change
             newContent = "\n---\n" + newLines.joined(separator: "\n") + "\n"
         }
 
-        return newContent
+        return (newContent, false)
     }
 
     private func checkThresholds() {
@@ -167,7 +218,7 @@ class BufferAccumulator {
         }
 
         if shouldFlush {
-            logger.debug("Flushing due to \(reason)")
+            logger.info("💧 Flushing due to \(reason)")
             flush()
         } else {
             // Start timer if we have content but haven't started one
@@ -178,6 +229,7 @@ class BufferAccumulator {
     private func startTimerIfNeeded() {
         guard pendingContentSize > 0 && accumulationTimer == nil else { return }
 
+        logger.debug("⏲️ Starting \(self.timeThreshold)s flush timer for \(self.pendingContentSize) pending chars")
         accumulationTimer?.invalidate()
         accumulationTimer = Timer.scheduledTimer(withTimeInterval: timeThreshold, repeats: false) { [weak self] _ in
             self?.timerFired()
@@ -186,7 +238,7 @@ class BufferAccumulator {
 
     private func timerFired() {
         if pendingContentSize > 0 {
-            logger.debug("Timer expired, flushing \(self.pendingContentSize) chars")
+            logger.info("⏰ Timer expired, flushing \(self.pendingContentSize) chars")
             flush()
         }
     }
@@ -206,7 +258,7 @@ class BufferAccumulator {
         let startIndex = sessionTranscript.index(sessionTranscript.startIndex, offsetBy: lastSentIndex)
         let unsentContent = String(sessionTranscript[startIndex...])
 
-        logger.debug("📤 Sending \(unsentContent.count) new chars (position \(self.lastSentIndex) to \(transcriptLength))")
+        logger.info("📤 Sending \(unsentContent.count) new chars to OpenAI (position \(self.lastSentIndex) to \(transcriptLength))")
 
         // Send the unsent content
         onThresholdReached(unsentContent, pendingContentSize)

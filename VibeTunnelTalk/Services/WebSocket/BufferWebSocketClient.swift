@@ -29,7 +29,8 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
     private var webSocket: WebSocketProtocol?
     private let webSocketFactory: WebSocketFactory
-    private var subscriptions = [String: (TerminalWebSocketEvent) -> Void]()
+    // Support multiple observers per session
+    private var subscriptions = [String: [(TerminalWebSocketEvent) -> Void]]()
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempts = 0
     private var isConnecting = false
@@ -174,10 +175,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
     }
 
     private func handleBinaryMessage(_ data: Data) {
-        // Only log significant binary messages
-        if data.count > 1000 {
-            logger.verbose("Large binary message: \(data.count) bytes")
-        }
+        // Process binary message silently
 
         guard data.count > 5 else {
             logger.debug("Binary message too short")
@@ -219,11 +217,14 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
         // Decode terminal event
         if let event = decodeTerminalEvent(from: messageData),
-           let handler = subscriptions[sessionId]
+           let handlers = subscriptions[sessionId]
         {
-            handler(event)
+            // Notify all observers for this session
+            for handler in handlers {
+                handler(event)
+            }
         } else {
-            logger.verbose("No handler for session ID: \(sessionId)")
+            logger.verbose("No handlers for session ID: \(sessionId)")
         }
     }
 
@@ -277,9 +278,11 @@ class BufferWebSocketClient: NSObject, ObservableObject {
         // Check for bell flag
         let hasBell = (flags & 0x01) != 0
         if hasBell {
-            // Send bell event separately
-            if let handler = subscriptions.values.first {
-                handler(.bell)
+            // Send bell event to all handlers
+            for handlers in subscriptions.values {
+                for handler in handlers {
+                    handler(.bell)
+                }
             }
         }
 
@@ -414,7 +417,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
             cells.append([BufferCell(char: " ", width: 1, fg: nil, bg: nil, attributes: nil)])
         }
 
-        logger.debug("Successfully decoded buffer: \(cols)x\(rows), \(cells.count) rows")
+        // Successfully decoded buffer
 
         return BufferSnapshot(
             cols: Int(cols),
@@ -604,12 +607,18 @@ class BufferWebSocketClient: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            // Store the handler
-            self.subscriptions[sessionId] = handler
+            // Add handler to array of observers for this session
+            if self.subscriptions[sessionId] != nil {
+                self.subscriptions[sessionId]?.append(handler)
+                logger.debug("Added additional observer for session \(sessionId)")
+            } else {
+                self.subscriptions[sessionId] = [handler]
+                logger.debug("Added first observer for session \(sessionId)")
 
-            // Send subscription message immediately if connected
-            if self.isConnected {
-                try? await self.sendMessage(["type": "subscribe", "sessionId": sessionId])
+                // Only send subscription message for the first observer
+                if self.isConnected {
+                    try? await self.sendMessage(["type": "subscribe", "sessionId": sessionId])
+                }
             }
         }
     }
@@ -622,10 +631,11 @@ class BufferWebSocketClient: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            // Remove the handler
+            // Note: This removes ALL handlers for the session
+            // In practice, we shouldn't call this unless we're truly done with the session
             self.subscriptions.removeValue(forKey: sessionId)
 
-            // Send unsubscribe message immediately if connected
+            // Only send unsubscribe if we're removing all handlers
             if self.isConnected {
                 try? await self.sendMessage(["type": "unsubscribe", "sessionId": sessionId])
             }
