@@ -1,27 +1,31 @@
 import Foundation
 import OSLog
 
-/// Accumulates terminal buffer updates intelligently before sending to OpenAI
-/// Handles both bursty data (lots of changes at once) and quiet periods (minimal changes over time)
+/// Accumulates terminal buffer updates from real-time WebSocket streaming
+/// Simple approach: capture all unique content and send it to OpenAI without duplicates
 class BufferAccumulator {
-    private let logger = AppLogger.terminalProcessor
+    private let logger = AppLogger.accumulator
+    private var totalSnapshotsProcessed = 0
 
     // Configuration
     let sizeThreshold: Int         // Characters to accumulate before sending
     let timeThreshold: TimeInterval // Seconds to wait before sending accumulated data
 
-    // State
-    private var accumulatedContent = ""
-    private var lastProcessedContent = "" // Track what we last processed to detect real changes
+    // Content tracking - SIMPLIFIED APPROACH
+    // We maintain the complete session transcript and track what we've sent
+    private var sessionTranscript = ""      // Everything we've seen in order
+    private var lastSentIndex = 0           // Position in transcript we've sent up to
+    private var lastSeenBuffer = ""         // The last buffer content we saw
+
+    // Pending content for threshold checking
+    private var pendingContentSize = 0
     private var firstAccumulationTime: Date?
     private var accumulationTimer: Timer?
-    private var pendingSnapshots: [BufferSnapshot] = []
-    private var totalAccumulatedChanges = 0
 
     // Callback
     private let onThresholdReached: (String, Int) -> Void
 
-    init(sizeThreshold: Int = 100,  // Lower threshold for more responsive updates
+    init(sizeThreshold: Int = 100,
          timeThreshold: TimeInterval = 2.0,
          onThresholdReached: @escaping (String, Int) -> Void) {
         self.sizeThreshold = sizeThreshold
@@ -29,175 +33,190 @@ class BufferAccumulator {
         self.onThresholdReached = onThresholdReached
     }
 
-    /// Add a buffer snapshot to the accumulator
+    /// Process a buffer snapshot from WebSocket
+    /// SIMPLIFIED: Just capture what's new and add it to our transcript
     func accumulate(_ snapshot: BufferSnapshot, extractedContent: String, changeCount: Int) {
-        logger.debug("[ACCUMULATOR] Accumulating snapshot with \(changeCount) changed chars")
+        totalSnapshotsProcessed += 1
 
-        // Store the latest complete content (not incremental)
-        accumulatedContent = extractedContent
+        // If this is our first buffer, everything is new
+        if lastSeenBuffer.isEmpty {
+            if !extractedContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                logger.info("📝 First buffer: \(extractedContent.count) chars")
+                sessionTranscript = extractedContent + "\n"
+                pendingContentSize = extractedContent.count
+                firstAccumulationTime = Date()
+                lastSeenBuffer = extractedContent
+                checkThresholds()
+            }
+            return
+        }
 
-        // Track total accumulated changes since last flush
-        if changeCount > 0 {
-            totalAccumulatedChanges += changeCount
+        // Compare with last buffer to find what's truly new
+        // Real-time streaming means we see everything as it scrolls through
+        let newContent = findNewContent(from: lastSeenBuffer, to: extractedContent)
 
-            // Track when we started accumulating
+        if !newContent.isEmpty {
+            logger.info("📝 Found \(newContent.count) chars of new content")
+
+            // Add to transcript
+            sessionTranscript += newContent
+
+            // Track pending size
+            let unsentSize = sessionTranscript.count - lastSentIndex
+            pendingContentSize = unsentSize
+
+            // Start timer if needed
             if firstAccumulationTime == nil {
                 firstAccumulationTime = Date()
-                logger.debug("[ACCUMULATOR] Starting new accumulation period")
             }
         }
 
-        // Add to pending snapshots for potential analysis
-        pendingSnapshots.append(snapshot)
+        // Update our last seen buffer
+        lastSeenBuffer = extractedContent
 
-        // Check if we should flush based on thresholds
+        // Check thresholds
         checkThresholds()
     }
 
-    private func checkThresholds() {
-        // Don't flush empty content
-        guard !accumulatedContent.isEmpty else { return }
+    /// Find truly new content by comparing buffers
+    /// SIMPLE APPROACH: Look for lines that weren't in the previous buffer
+    private func findNewContent(from oldBuffer: String, to newBuffer: String) -> String {
+        let oldLines = Set(oldBuffer.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+        let newLines = newBuffer.components(separatedBy: .newlines)
 
-        // Check if content actually changed from what we last processed
-        let actualChanges = countChanges(from: lastProcessedContent, to: accumulatedContent)
-        guard actualChanges > 0 else {
-            logger.debug("[ACCUMULATOR] No actual changes detected from last processed content")
-            return
+        var newContent: [String] = []
+
+        for line in newLines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty && !oldLines.contains(line) {
+                // This line wasn't in the old buffer - it's new content
+                newContent.append(line)
+            }
         }
+
+        // If we found new content, return it
+        if !newContent.isEmpty {
+            return newContent.joined(separator: "\n") + "\n"
+        }
+
+        // Check for significant buffer changes that might indicate scrolling
+        // If the buffers are very different, capture the current state
+        let similarity = calculateSimilarity(oldBuffer, newBuffer)
+        if similarity < 0.3 && !newBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            logger.info("📋 Low similarity (\(Int(similarity * 100))%) - capturing current buffer")
+            return "[Buffer Update]\n" + newBuffer + "\n"
+        }
+
+        return ""
+    }
+
+    /// Calculate similarity between two buffers (0.0 to 1.0)
+    private func calculateSimilarity(_ buffer1: String, _ buffer2: String) -> Double {
+        let lines1 = Set(buffer1.components(separatedBy: .newlines).filter { !$0.isEmpty })
+        let lines2 = Set(buffer2.components(separatedBy: .newlines).filter { !$0.isEmpty })
+
+        guard !lines1.isEmpty || !lines2.isEmpty else { return 1.0 }
+
+        let intersection = lines1.intersection(lines2).count
+        let union = lines1.union(lines2).count
+
+        return union > 0 ? Double(intersection) / Double(union) : 0.0
+    }
+
+    private func checkThresholds() {
+        let unsentSize = sessionTranscript.count - lastSentIndex
+        guard unsentSize > 0 else { return }
 
         var shouldFlush = false
         var reason = ""
 
-        // Check size threshold based on accumulated changes
-        if totalAccumulatedChanges >= sizeThreshold {
+        // Check size threshold
+        if unsentSize >= sizeThreshold {
             shouldFlush = true
-            reason = "size threshold (\(totalAccumulatedChanges) >= \(sizeThreshold))"
+            reason = "size threshold (\(unsentSize) >= \(sizeThreshold))"
         }
 
-        // Check time threshold if we've been accumulating
+        // Check time threshold
         if let startTime = firstAccumulationTime {
-            let elapsedTime = Date().timeIntervalSince(startTime)
-            if elapsedTime >= timeThreshold {
+            let elapsed = Date().timeIntervalSince(startTime)
+            if elapsed >= timeThreshold {
                 shouldFlush = true
-                reason = "time threshold (\(String(format: "%.1f", elapsedTime))s >= \(timeThreshold)s)"
+                reason = "time threshold (\(String(format: "%.1f", elapsed))s >= \(timeThreshold)s)"
             }
         }
 
-        // For very large changes, flush immediately
-        if actualChanges > sizeThreshold * 3 {
-            shouldFlush = true
-            reason = "large change detected (\(actualChanges) chars)"
-        }
-
         if shouldFlush {
-            logger.info("[ACCUMULATOR] Flushing due to \(reason)")
+            logger.info("💧 Flushing due to \(reason)")
             flush()
         } else {
-            // Start or reset timer for time-based flushing
+            // Start timer if we have unsent content
             startTimerIfNeeded()
         }
     }
 
     private func startTimerIfNeeded() {
-        // Only start timer if we have content and haven't started one yet
-        guard !accumulatedContent.isEmpty && accumulationTimer == nil else { return }
+        let unsentSize = sessionTranscript.count - lastSentIndex
+        guard unsentSize > 0 && accumulationTimer == nil else { return }
 
-        logger.debug("[ACCUMULATOR] Starting flush timer for \(self.timeThreshold) seconds")
-
-        // Cancel any existing timer
         accumulationTimer?.invalidate()
-
-        // Create new timer
         accumulationTimer = Timer.scheduledTimer(withTimeInterval: timeThreshold, repeats: false) { [weak self] _ in
-            self?.handleTimerFired()
+            self?.timerFired()
         }
     }
 
-    private func handleTimerFired() {
-        guard !accumulatedContent.isEmpty else {
-            logger.debug("[ACCUMULATOR] Timer fired but no content to flush")
-            return
-        }
-
-        // Check if content changed since we last processed
-        let actualChanges = countChanges(from: lastProcessedContent, to: accumulatedContent)
-        if actualChanges > 0 {
-            logger.info("[ACCUMULATOR] Timer expired, flushing \(actualChanges) chars of changes")
+    private func timerFired() {
+        let unsentSize = sessionTranscript.count - lastSentIndex
+        if unsentSize > 0 {
+            logger.info("⏰ Timer expired, flushing \(unsentSize) chars")
             flush()
-        } else {
-            logger.debug("[ACCUMULATOR] Timer expired but no actual changes to flush")
         }
     }
 
     private func flush() {
-        guard !accumulatedContent.isEmpty else {
-            logger.debug("[ACCUMULATOR] Nothing to flush")
+        guard !sessionTranscript.isEmpty else { return }
+
+        // Get unsent portion of transcript
+        let transcriptLength = sessionTranscript.count
+        guard lastSentIndex < transcriptLength else {
+            resetPendingState()
             return
         }
 
-        // Calculate actual changes from last processed content
-        let changeCount = countChanges(from: lastProcessedContent, to: accumulatedContent)
+        // Extract only what hasn't been sent yet
+        let startIndex = sessionTranscript.index(sessionTranscript.startIndex, offsetBy: lastSentIndex)
+        let unsentContent = String(sessionTranscript[startIndex...])
 
-        guard changeCount > 0 else {
-            logger.debug("[ACCUMULATOR] No actual changes to flush")
-            resetState()
-            return
-        }
+        logger.info("📤 Sending \(unsentContent.count) chars to OpenAI (position \(self.lastSentIndex) to \(transcriptLength))")
 
-        logger.info("[ACCUMULATOR] Flushing \(self.accumulatedContent.count) total chars with \(changeCount) changed chars")
+        // Send the unsent content
+        onThresholdReached(unsentContent, unsentContent.count)
 
-        // Send accumulated content
-        onThresholdReached(accumulatedContent, changeCount)
+        // Update our sent position
+        lastSentIndex = transcriptLength
 
-        // Update last processed content
-        lastProcessedContent = accumulatedContent
-
-        // Reset accumulation state
-        resetState()
+        // Reset pending state
+        resetPendingState()
     }
 
-    private func resetState() {
-        accumulatedContent = ""
-        pendingSnapshots.removeAll()
+    private func resetPendingState() {
+        pendingContentSize = 0
         firstAccumulationTime = nil
-        totalAccumulatedChanges = 0
-
-        // Cancel timer
         accumulationTimer?.invalidate()
         accumulationTimer = nil
     }
 
-    /// Count the number of character changes between two strings
-    private func countChanges(from old: String, to new: String) -> Int {
-        if old.isEmpty { return new.count }
-        if new.isEmpty { return old.count }
-
-        // Find common prefix
-        let commonPrefixLength = zip(old, new).prefix(while: { $0 == $1 }).count
-
-        // Find common suffix
-        let oldSuffix = old.suffix(old.count - commonPrefixLength)
-        let newSuffix = new.suffix(new.count - commonPrefixLength)
-        let commonSuffixLength = zip(oldSuffix.reversed(), newSuffix.reversed()).prefix(while: { $0 == $1 }).count
-
-        // Calculate changed region
-        let oldChangedLength = old.count - commonPrefixLength - commonSuffixLength
-        let newChangedLength = new.count - commonPrefixLength - commonSuffixLength
-
-        return max(oldChangedLength, newChangedLength)
-    }
-
     /// Force flush any pending data
     func forceFlush() {
-        if !accumulatedContent.isEmpty {
-            logger.info("[ACCUMULATOR] Force flushing pending data")
+        let unsentSize = sessionTranscript.count - lastSentIndex
+        if unsentSize > 0 {
+            logger.info("🔄 Force flushing \(unsentSize) chars")
             flush()
         }
     }
 
     /// Stop accumulation and cleanup
     func stop() {
-        logger.info("[ACCUMULATOR] Stopping accumulator")
+        logger.info("⏹️ Stopping accumulator")
 
         // Flush any pending data
         forceFlush()
@@ -206,12 +225,12 @@ class BufferAccumulator {
         accumulationTimer?.invalidate()
         accumulationTimer = nil
 
-        // Clear state
-        pendingSnapshots.removeAll()
-        accumulatedContent = ""
-        lastProcessedContent = ""
+        // Reset all state
+        sessionTranscript = ""
+        lastSentIndex = 0
+        lastSeenBuffer = ""
+        pendingContentSize = 0
         firstAccumulationTime = nil
-        totalAccumulatedChanges = 0
     }
 
     deinit {

@@ -34,6 +34,9 @@ extension OpenAIRealtimeManager {
 
     /// Disconnect from OpenAI
     func disconnect() {
+        // Force log any pending statistics before disconnecting
+        statsLogger.forceLogSummary()
+
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         stopAudioCapture()
@@ -45,6 +48,8 @@ extension OpenAIRealtimeManager {
             self.isResponseInProgress = false
             self.activeResponseId = nil
             self.narrationQueue.removeAll()
+            self.isPlayingAudio = false
+            self.latestAudioData = nil
         }
     }
 
@@ -125,6 +130,8 @@ extension OpenAIRealtimeManager {
             self.isResponseInProgress = false
             self.activeResponseId = nil
             self.narrationQueue.removeAll()
+            self.isPlayingAudio = false
+            self.latestAudioData = nil
         }
 
         let formatter = DateFormatter()

@@ -17,18 +17,18 @@ extension VibeTunnelSocketManager {
         // Check if .vibetunnel directory exists
         let vibetunnelPath = homeDir + "/.vibetunnel"
         if !fm.fileExists(atPath: vibetunnelPath) {
-            logger.error("[VIBETUNNEL-DISCOVERY] ❌ .vibetunnel directory does not exist at: \(vibetunnelPath)")
+            logger.verbose(".vibetunnel directory does not exist at: \(vibetunnelPath)")
             return []
         }
         // Found .vibetunnel directory
 
         // Check if control directory exists
         if !fm.fileExists(atPath: controlPath) {
-            logger.error("[VIBETUNNEL-DISCOVERY] ❌ Control directory does not exist at: \(controlPath)")
+            logger.verbose("Control directory does not exist at: \(controlPath)")
 
             // List what's in .vibetunnel directory for debugging
             if let vibetunnelContents = try? fm.contentsOfDirectory(atPath: vibetunnelPath) {
-                logger.debug("[VIBETUNNEL-DISCOVERY] Contents of .vibetunnel: \(vibetunnelContents.joined(separator: ", "))")
+                logger.verbose("Contents of .vibetunnel: \(vibetunnelContents.joined(separator: ", "))")
             }
             return []
         }
@@ -36,7 +36,7 @@ extension VibeTunnelSocketManager {
 
         // Get contents of control directory
         guard let contents = try? fm.contentsOfDirectory(atPath: controlPath) else {
-            logger.error("[VIBETUNNEL-DISCOVERY] ❌ Failed to read contents of control directory at: \(controlPath)")
+            logger.warning("Failed to read contents of control directory at: \(controlPath)")
             return []
         }
 
@@ -65,7 +65,7 @@ extension VibeTunnelSocketManager {
                     return true
                 } else {
                     // Socket file exists but is stale
-                    logger.debug("[VIBETUNNEL-DISCOVERY] Socket file exists but is stale: \(sessionId)")
+                    logger.verbose("Socket file exists but is stale: \(sessionId)")
                     return false
                 }
             } else {
@@ -75,9 +75,9 @@ extension VibeTunnelSocketManager {
         }
 
         if validSessions.isEmpty {
-            logger.warning("[VIBETUNNEL] No active sessions found")
+            logger.debug("No active sessions found")
         } else {
-            logger.info("[VIBETUNNEL] Found \(validSessions.count) active session(s)")
+            logger.info("🔍 Found \(validSessions.count) active session(s)")
         }
 
         return validSessions

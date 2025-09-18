@@ -100,6 +100,7 @@ extension OpenAIRealtimeManager {
         if let response = json["response"] as? [String: Any],
            let responseId = response["id"] as? String {
             activeResponseId = responseId
+            statsLogger.recordResponseStarted()
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 let formatter = DateFormatter()
@@ -128,6 +129,7 @@ extension OpenAIRealtimeManager {
 
         if let response = json["response"] as? [String: Any],
            let responseId = response["id"] as? String {
+            statsLogger.recordResponseCompleted()
             logger.info("[OPENAI @ \(timestamp)] ✅ Response completed: \(responseId)")
             if responseId == activeResponseId {
                 activeResponseId = nil
@@ -161,7 +163,7 @@ extension OpenAIRealtimeManager {
         // The delta field contains base64-encoded audio data
         if let delta = json["delta"] as? String,
            let decodedAudio = Data(base64Encoded: delta) {
-            logger.debug("[OPENAI] 🎵 Received audio chunk: \(decodedAudio.count) bytes")
+            statsLogger.recordAudioChunk(bytes: decodedAudio.count)
             handleAudioChunk(decodedAudio)
         } else {
             logger.warning("[OPENAI] ⚠️ response.audio.delta received but no valid delta data found")
@@ -171,7 +173,7 @@ extension OpenAIRealtimeManager {
     private func handleResponseAudioTranscriptDelta(_ json: [String: Any]) {
         // Handle audio transcript chunk (not the audio itself)
         if let delta = json["delta"] as? String {
-            logger.debug("[OPENAI] 📝 Transcript delta: \(delta)")
+            statsLogger.recordTranscriptDelta(chars: delta.count)
             DispatchQueue.main.async {
                 self.transcription += delta
             }
@@ -256,6 +258,7 @@ extension OpenAIRealtimeManager {
     private func handleError(_ json: [String: Any]) {
         // Handle error
         if let error = json["error"] as? [String: Any] {
+            statsLogger.recordError()
             logger.error("[OPENAI] 🚨 Error from OpenAI: \(error)")
 
             // Check error type and handle appropriately

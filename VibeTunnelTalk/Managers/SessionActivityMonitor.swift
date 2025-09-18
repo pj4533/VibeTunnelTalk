@@ -387,44 +387,50 @@ class SessionActivityMonitor: ObservableObject {
         var activityContext = ""
         switch currentActivity {
         case .task(let name):
-            activityContext = "Claude is working on task: \(name)"
+            activityContext = "Working on: \(name)"
         case .analyzing:
-            activityContext = "Claude is analyzing the codebase"
+            activityContext = "Analyzing the codebase"
         case .readingFiles:
-            activityContext = "Claude is reading files"
+            activityContext = "Reading files"
         case .writingCode:
-            activityContext = "Claude is modifying code"
+            activityContext = "Modifying code"
         case .runningCommand:
-            activityContext = "Claude is running a command"
+            activityContext = "Running a command"
         case .searching:
-            activityContext = "Claude is searching for information"
+            activityContext = "Searching"
         case .thinking:
-            activityContext = "Claude is thinking about the approach"
+            activityContext = "Planning approach"
         case .idle:
             activityContext = ""
         }
 
         return """
-        Terminal output from Claude Code session:
-        \(activityContext.isEmpty ? "" : "\nCurrent activity: \(activityContext)\n")
+        Terminal output:
+        \(activityContext.isEmpty ? "" : "\(activityContext)\n")
         ```
         \(filteredContent)
         ```
 
-        Provide a brief, natural narration (1-2 sentences) about what's happening.
+        ALWAYS use "we". NEVER say "Claude", "the system", "the terminal", etc.
 
-        Focus on:
-        - If Claude just started a task, mention what the task is
-        - If Claude is modifying files, mention what's being changed
-        - If there's an error or success, mention the outcome
-        - If Claude completed something, summarize what was accomplished
+        CRITICAL: Determine if this is an INTERIM update or a FINAL result:
 
-        Keep it conversational and concise. Don't repeat obvious information.
-        Example good narrations:
-        - "Claude is starting to analyze the project structure"
-        - "Claude found several files and is now examining the code"
-        - "Looks like Claude is updating the configuration files"
-        - "Claude completed the analysis and found what was needed"
+        INTERIM updates (activity in progress):
+        - Be EXTREMELY brief: 3-5 words maximum
+        - State ONLY the action: "Reading the file", "Running tests", "Searching for matches"
+        - NO explanations, NO details, NO context
+        - Examples: "Checking the code", "Building now", "Looking at files"
+
+        FINAL results (command completed, errors found, results available):
+        - Provide detailed summary of WHAT happened:
+          * For errors: Describe the specific errors
+          * For search results: Describe what was found
+          * For test results: State pass/fail counts
+          * For answers: State the actual answer
+          * For command output: Describe key results
+
+        If you see "Task(", "Reading", "Running:", "Searching" → INTERIM (be ultra-brief)
+        If you see "Done", errors, results, answers, completion → FINAL (be detailed)
         """
     }
 

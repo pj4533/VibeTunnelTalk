@@ -77,6 +77,12 @@ The application uses a real-time WebSocket-based architecture that leverages Vib
 4. **OpenAIRealtimeManager**: Manages WebSocket connection to OpenAI's Realtime API
    - Handles audio streaming in PCM16 format
    - Manages voice activity detection and TTS output
+   - Implements drop-and-replace audio queueing:
+     - Only one audio response plays at a time
+     - New responses replace queued ones while audio is playing
+     - Latest update plays immediately after current audio finishes
+     - Prevents overlapping speech and ensures current information
+   - Uses AVAudioPlayerDelegate for playback completion tracking
    - Located at: `VibeTunnelTalk/Managers/OpenAIRealtimeManager.swift`
 
 5. **VoiceCommandProcessor**: Processes voice commands into terminal actions
@@ -155,6 +161,12 @@ A comprehensive implementation guide is available in `docs/VibeTunnelTalk_Implem
 5. **No ANSI Parsing**: VibeTunnel handles all terminal emulation and ANSI escape sequence parsing server-side
 
 6. **Error Handling**: Implement reconnection logic for IPC socket and WebSocket connections (automatic exponential backoff included)
+
+7. **Audio Playback Management**: The system uses a drop-and-replace strategy for audio responses:
+   - Prevents audio overlap by playing only one response at a time
+   - Drops intermediate responses in favor of the latest update
+   - Ensures users always hear the most current terminal state
+   - **Future Improvements**: Plan to implement intelligent queue management with response summarization, priority-based playback, and user-configurable behavior
 
 ## Reference Implementation
 

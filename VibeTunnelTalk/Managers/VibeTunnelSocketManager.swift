@@ -26,13 +26,13 @@ class VibeTunnelSocketManager: ObservableObject {
     /// Configure the smart terminal processor with OpenAI manager
     func configureSmartProcessing(with openAIManager: OpenAIRealtimeManager) {
         terminalProcessor = SmartTerminalProcessor(openAIManager: openAIManager)
-        logger.info("[VIBETUNNEL] Smart terminal processing configured")
+        logger.debug("Smart terminal processing configured")
     }
 
     /// Configure authentication service
     func configureAuthentication(with authService: VibeTunnelAuthService) {
         self.authService = authService
-        logger.info("[VIBETUNNEL] Authentication service configured")
+        logger.debug("Authentication service configured")
     }
 
     /// Get the terminal processor for UI access
@@ -42,11 +42,11 @@ class VibeTunnelSocketManager: ObservableObject {
 
     /// Connect to a VibeTunnel session
     func connect(to sessionId: String) {
-        logger.info("[VIBETUNNEL] Attempting to connect to session: \(sessionId)")
+        logger.info("🔌 Connecting to session: \(sessionId)")
 
         // Only disconnect if we're connecting to a different session
         if currentSessionId != nil && currentSessionId != sessionId {
-            logger.info("[VIBETUNNEL] Disconnecting from previous session: \(self.currentSessionId ?? "")")
+            logger.debug("Disconnecting from previous session: \(self.currentSessionId ?? "")")
             // Disconnect existing connection but preserve the new sessionId
             disconnectInternal(clearSessionId: false)
         }
@@ -58,7 +58,7 @@ class VibeTunnelSocketManager: ObservableObject {
         let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
         let socketPath = homeDir + "/.vibetunnel/control/\(sessionId)/ipc.sock"
 
-        logger.info("[VIBETUNNEL] Socket path: \(socketPath)")
+        logger.debug("Socket path: \(socketPath)")
 
         // Create NWConnection for Unix domain socket
         let endpoint = NWEndpoint.unix(path: socketPath)
@@ -87,7 +87,7 @@ class VibeTunnelSocketManager: ObservableObject {
 
     /// Internal disconnect with option to preserve sessionId
     private func disconnectInternal(clearSessionId: Bool) {
-        logger.info("[VIBETUNNEL] Disconnecting...")
+        logger.debug("Disconnecting socket connection")
 
         connection?.cancel()
         connection = nil
@@ -111,7 +111,7 @@ class VibeTunnelSocketManager: ObservableObject {
     /// Send input to the terminal
     func sendInput(_ text: String) {
         guard isConnected else {
-            logger.warning("[VIBETUNNEL] Cannot send input - not connected")
+            logger.warning("Cannot send input - not connected")
             return
         }
 
@@ -119,7 +119,7 @@ class VibeTunnelSocketManager: ObservableObject {
 
         connection?.send(content: message.data, completion: .contentProcessed { [weak self] error in
             if let error = error {
-                self?.logger.error("[VIBETUNNEL] Failed to send input: \(error.localizedDescription)")
+                self?.logger.error("Failed to send input: \(error.localizedDescription)")
             }
         })
     }
@@ -155,7 +155,7 @@ class VibeTunnelSocketManager: ObservableObject {
 
         connection?.send(content: message.data, completion: .contentProcessed { [weak self] error in
             if let error = error {
-                self?.logger.error("[VIBETUNNEL] ❌ Failed to send resize: \(error.localizedDescription)")
+                self?.logger.error("Failed to send resize: \(error.localizedDescription)")
             }
         })
     }
@@ -163,18 +163,18 @@ class VibeTunnelSocketManager: ObservableObject {
     // MARK: - WebSocket Management
 
     private func startBufferService(sessionId: String) {
-        logger.info("[VIBETUNNEL-WEBSOCKET] startBufferService called for session: \(sessionId)")
+        logger.debug("Starting buffer service for session: \(sessionId)")
 
         // Use shared WebSocket client for real-time terminal snapshots
         bufferWebSocketClient = BufferWebSocketClient.shared
-        logger.info("[VIBETUNNEL-WEBSOCKET] Using shared BufferWebSocketClient instance")
+        logger.verbose("Using shared BufferWebSocketClient instance")
 
         // Configure WebSocket client with auth service if available
         if let authService = authService {
-            logger.info("[VIBETUNNEL-WEBSOCKET] Configuring BufferWebSocketClient with auth service")
+            logger.verbose("Configuring WebSocket with auth service")
             bufferWebSocketClient?.setAuthenticationService(authService)
         } else {
-            logger.warning("[VIBETUNNEL-WEBSOCKET] No auth service available for WebSocket client")
+            logger.warning("No auth service available for WebSocket client")
         }
 
         // Store a strong reference to the WebSocket client
@@ -182,33 +182,33 @@ class VibeTunnelSocketManager: ObservableObject {
 
         // Start WebSocket connection
         Task {
-            logger.info("[VIBETUNNEL-WEBSOCKET] Starting async task for WebSocket connection")
+            logger.verbose("Starting async WebSocket connection")
 
             // Connect WebSocket (not async in BufferWebSocketClient)
             client?.connect()
-            logger.info("[VIBETUNNEL-WEBSOCKET] WebSocket connect() initiated")
+            logger.debug("WebSocket connect() initiated")
 
             // Double-check that we haven't been stopped in the meantime
             guard self.bufferWebSocketClient != nil else {
-                logger.warning("[VIBETUNNEL-WEBSOCKET] WebSocket client was nil after connect, likely stopped during connection")
+                logger.warning("WebSocket client was nil after connect")
                 return
             }
 
             // If we have a smart processor, let it handle the WebSocket updates
             if let terminalProcessor = terminalProcessor {
-                logger.info("[VIBETUNNEL-WEBSOCKET] Starting smart processor with WebSocket client")
+                logger.debug("Starting smart processor with WebSocket")
                 await terminalProcessor.startProcessingWithBufferClient(bufferClient: bufferWebSocketClient, sessionId: sessionId)
-                logger.info("[VIBETUNNEL-WEBSOCKET] Smart processor configured with WebSocket")
+                logger.debug("Smart processor configured")
             } else {
-                logger.warning("[VIBETUNNEL-WEBSOCKET] Missing terminal processor or WebSocket client")
+                logger.warning("Missing terminal processor or WebSocket client")
             }
         }
 
-        logger.info("[VIBETUNNEL-WEBSOCKET] startBufferService completed for session: \(sessionId)")
+        logger.debug("Buffer service started")
     }
 
     private func stopBufferService() {
-        logger.info("[VIBETUNNEL-WEBSOCKET] stopBufferService called")
+        logger.debug("Stopping buffer service")
 
         // Capture reference to current webSocketClient before clearing it
         let currentWebSocketClient = bufferWebSocketClient
@@ -217,13 +217,13 @@ class VibeTunnelSocketManager: ObservableObject {
         // Stop the smart processor if it's running
         Task {
             if let terminalProcessor = terminalProcessor, currentWebSocketClient != nil {
-                logger.info("[VIBETUNNEL-WEBSOCKET] Stopping WebSocket processing in terminal processor")
+                logger.debug("Stopping WebSocket processing")
                 terminalProcessor.stopProcessing()
             }
 
             // Note: We don't disconnect the shared WebSocket client here since it might be
             // used by other components (like TerminalBufferView)
-            logger.info("[VIBETUNNEL-WEBSOCKET] Keeping shared WebSocket client connected for other components")
+            logger.verbose("Keeping shared WebSocket client connected")
         }
 
         logger.info("[VIBETUNNEL-WEBSOCKET] stopBufferService completed")

@@ -29,7 +29,8 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
     private var webSocket: WebSocketProtocol?
     private let webSocketFactory: WebSocketFactory
-    private var subscriptions = [String: (TerminalWebSocketEvent) -> Void]()
+    // Support multiple observers per session
+    private var subscriptions = [String: [(TerminalWebSocketEvent) -> Void]]()
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempts = 0
     private var isConnecting = false
@@ -98,7 +99,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
                 return
             }
 
-            logger.info("Connecting to \(wsURL)")
+            logger.debug("Connecting to \(wsURL)")
 
             // Disconnect existing WebSocket if any
             webSocket?.disconnect(with: .goingAway, reason: nil)
@@ -149,11 +150,11 @@ class BufferWebSocketClient: NSObject, ObservableObject {
             case "connected":
                 // Server welcome message - just log it
                 let version = json["version"] as? String ?? "unknown"
-                logger.info("Received server welcome message (version: \(version))")
+                logger.debug("Server welcome: version \(version)")
 
             case "subscribed":
                 if let sessionId = json["sessionId"] as? String {
-                    logger.info("Server confirmed subscription to session: \(sessionId)")
+                    logger.debug("Subscribed to session: \(sessionId)")
                 }
 
             case "ping":
@@ -174,7 +175,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
     }
 
     private func handleBinaryMessage(_ data: Data) {
-        logger.debug("Received binary message: \(data.count) bytes")
+        // Process binary message silently
 
         guard data.count > 5 else {
             logger.debug("Binary message too short")
@@ -208,21 +209,22 @@ class BufferWebSocketClient: NSObject, ObservableObject {
             logger.warning("Failed to decode session ID")
             return
         }
-        logger.debug("Session ID: \(sessionId)")
+        // Session ID extracted
         offset += Int(sessionIdLength)
 
         // Remaining data is the message payload
         let messageData = data.subdata(in: offset..<data.count)
-        logger.debug("Message payload: \(messageData.count) bytes")
 
         // Decode terminal event
         if let event = decodeTerminalEvent(from: messageData),
-           let handler = subscriptions[sessionId]
+           let handlers = subscriptions[sessionId]
         {
-            logger.debug("Dispatching event to handler")
-            handler(event)
+            // Notify all observers for this session
+            for handler in handlers {
+                handler(event)
+            }
         } else {
-            logger.debug("No handler for session ID: \(sessionId)")
+            logger.verbose("No handlers for session ID: \(sessionId)")
         }
     }
 
@@ -230,11 +232,11 @@ class BufferWebSocketClient: NSObject, ObservableObject {
         // This is binary buffer data, not JSON
         // Decode the binary terminal buffer
         guard let bufferSnapshot = decodeBinaryBuffer(data) else {
-            logger.debug("Failed to decode binary buffer")
+            logger.verbose("Failed to decode binary buffer")
             return nil
         }
 
-        logger.debug("Decoded buffer: \(bufferSnapshot.cols)x\(bufferSnapshot.rows)")
+        // Successfully decoded buffer
 
         // Return buffer update event
         return .bufferUpdate(snapshot: bufferSnapshot)
@@ -245,7 +247,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
         // Read header
         guard data.count >= 32 else {
-            logger.debug("Buffer too small for header: \(data.count) bytes (need 32)")
+            logger.verbose("Buffer too small for header: \(data.count) bytes (need 32)")
             return nil
         }
 
@@ -276,15 +278,17 @@ class BufferWebSocketClient: NSObject, ObservableObject {
         // Check for bell flag
         let hasBell = (flags & 0x01) != 0
         if hasBell {
-            // Send bell event separately
-            if let handler = subscriptions.values.first {
-                handler(.bell)
+            // Send bell event to all handlers
+            for handlers in subscriptions.values {
+                for handler in handlers {
+                    handler(.bell)
+                }
             }
         }
 
         // Dimensions and cursor - validate before reading
         guard offset + 20 <= data.count else {
-            logger.debug("Insufficient data for header fields")
+            logger.verbose("Insufficient data for header fields")
             return nil
         }
 
@@ -324,8 +328,8 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
         // Validate cursor position
         if cursorX < 0 || cursorX > Int32(cols) || cursorY < 0 || cursorY > Int32(rows) {
-            logger.debug(
-                "Warning: cursor position out of bounds: (\(cursorX),\(cursorY)) for \(cols)x\(rows)"
+            logger.verbose(
+                "Cursor out of bounds: (\(cursorX),\(cursorY)) for \(cols)x\(rows)"
             )
         }
 
@@ -335,7 +339,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
         while offset < data.count && totalRows < Int(rows) {
             guard offset < data.count else {
-                logger.debug("Unexpected end of data at offset \(offset)")
+                logger.verbose("Unexpected end of data at offset \(offset)")
                 break
             }
 
@@ -345,7 +349,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
             if marker == 0xFE {
                 // Empty row(s)
                 guard offset < data.count else {
-                    logger.debug("Missing count byte for empty rows")
+                    logger.verbose("Missing count byte for empty rows")
                     break
                 }
 
@@ -362,7 +366,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
             } else if marker == 0xFD {
                 // Row with content
                 guard offset + 2 <= data.count else {
-                    logger.debug("Insufficient data for cell count")
+                    logger.verbose("Insufficient data for cell count")
                     break
                 }
 
@@ -373,7 +377,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
                 // Validate cell count
                 guard cellCount <= cols * 2 else { // Allow for wide chars
-                    logger.debug("Invalid cell count: \(cellCount) for \(cols) columns")
+                    logger.verbose("Invalid cell count: \(cellCount) for \(cols) columns")
                     break
                 }
 
@@ -388,11 +392,11 @@ class BufferWebSocketClient: NSObject, ObservableObject {
 
                         // Stop if we exceed column count
                         if colIndex > Int(cols) {
-                            logger.debug("Warning: row \(totalRows) exceeds column count at cell \(i)")
+                            logger.verbose("Row \(totalRows) exceeds column count at cell \(i)")
                             break
                         }
                     } else {
-                        logger.debug("Failed to decode cell \(i) in row \(totalRows) at offset \(offset)")
+                        logger.verbose("Failed to decode cell \(i) in row \(totalRows) at offset \(offset)")
                         break
                     }
                 }
@@ -413,7 +417,7 @@ class BufferWebSocketClient: NSObject, ObservableObject {
             cells.append([BufferCell(char: " ", width: 1, fg: nil, bg: nil, attributes: nil)])
         }
 
-        logger.debug("Successfully decoded buffer: \(cols)x\(rows), \(cells.count) rows")
+        // Successfully decoded buffer
 
         return BufferSnapshot(
             cols: Int(cols),
@@ -603,12 +607,18 @@ class BufferWebSocketClient: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            // Store the handler
-            self.subscriptions[sessionId] = handler
+            // Add handler to array of observers for this session
+            if self.subscriptions[sessionId] != nil {
+                self.subscriptions[sessionId]?.append(handler)
+                logger.debug("Added additional observer for session \(sessionId)")
+            } else {
+                self.subscriptions[sessionId] = [handler]
+                logger.debug("Added first observer for session \(sessionId)")
 
-            // Send subscription message immediately if connected
-            if self.isConnected {
-                try? await self.sendMessage(["type": "subscribe", "sessionId": sessionId])
+                // Only send subscription message for the first observer
+                if self.isConnected {
+                    try? await self.sendMessage(["type": "subscribe", "sessionId": sessionId])
+                }
             }
         }
     }
@@ -621,10 +631,11 @@ class BufferWebSocketClient: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            // Remove the handler
+            // Note: This removes ALL handlers for the session
+            // In practice, we shouldn't call this unless we're truly done with the session
             self.subscriptions.removeValue(forKey: sessionId)
 
-            // Send unsubscribe message immediately if connected
+            // Only send unsubscribe if we're removing all handlers
             if self.isConnected {
                 try? await self.sendMessage(["type": "unsubscribe", "sessionId": sessionId])
             }

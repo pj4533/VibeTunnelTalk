@@ -46,10 +46,11 @@ struct TerminalBufferView: View {
         }
         .font(.system(size: fontSize, design: .monospaced))
         .onAppear {
-            viewModel.startReceivingUpdates(for: sessionId)
+            viewModel.startObserving(sessionId: sessionId)
         }
         .onDisappear {
-            viewModel.stopReceivingUpdates()
+            // Do nothing - keep the connection alive
+            // This view is just a passive observer
         }
     }
 

@@ -99,10 +99,19 @@ extension OpenAIRealtimeManager {
             "response": [
                 "modalities": ["text", "audio"],
                 "instructions": """
-                    Analyze the terminal output and provide a natural, conversational narration.
-                    Keep it brief (1-2 sentences) and informative.
-                    Focus on what Claude is actually doing, not just listing commands.
-                    Speak naturally as if you're explaining to someone what's happening on screen.
+                    ALWAYS use "we". NEVER say "Claude", "the system", "the terminal", etc.
+
+                    CRITICAL: Check if this is INTERIM activity or FINAL results:
+
+                    INTERIM (action in progress):
+                    - Maximum 3-5 words
+                    - State ONLY the action
+                    - Examples: "Reading files", "Running tests", "Checking code"
+
+                    FINAL (completed with results):
+                    - Provide detailed summary
+                    - Describe errors, results, answers
+                    - State what was found/happened
                     """
             ]
         ]
