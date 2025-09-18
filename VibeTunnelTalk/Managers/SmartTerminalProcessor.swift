@@ -27,8 +27,9 @@ class SmartTerminalProcessor: ObservableObject {
 
     // Subscriptions
 
-    // Debug file for OpenAI updates
+    // Debug files for logging
     var debugFileHandle: FileHandle?
+    var rawBufferFileHandle: FileHandle?
 
     // WebSocket accumulator
     private var currentAccumulator: BufferAccumulator?
@@ -99,6 +100,9 @@ class SmartTerminalProcessor: ObservableObject {
     private func processWebSocketSnapshot(_ snapshot: BufferSnapshot) {
         totalSnapshotsProcessed += 1
 
+        // Write raw buffer to debug file
+        writeRawBufferToDebugFile(snapshot, bufferNumber: totalSnapshotsProcessed)
+
         // Processing snapshot
 
         // Extract text content from buffer
@@ -129,6 +133,9 @@ class SmartTerminalProcessor: ObservableObject {
 
         debugFileHandle?.closeFile()
         debugFileHandle = nil
+
+        rawBufferFileHandle?.closeFile()
+        rawBufferFileHandle = nil
 
         isProcessing = false
     }

@@ -9,7 +9,8 @@ extension SmartTerminalProcessor {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let timestamp = formatter.string(from: Date())
-        let filename = "openai_updates_\(timestamp).txt"
+        let openAIFilename = "openai_updates_\(timestamp).txt"
+        let rawBufferFilename = "raw_buffers_\(timestamp).txt"
 
         // Create logs directory in Library/Logs/VibeTunnelTalk
         let logsDir = FileManager.default.homeDirectoryForCurrentUser
@@ -18,14 +19,13 @@ extension SmartTerminalProcessor {
         // Create directory if it doesn't exist
         try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
 
-        let filePath = logsDir.appendingPathComponent(filename)
-
-        // Create the file
-        FileManager.default.createFile(atPath: filePath.path, contents: nil, attributes: nil)
+        // Create OpenAI updates file
+        let openAIFilePath = logsDir.appendingPathComponent(openAIFilename)
+        FileManager.default.createFile(atPath: openAIFilePath.path, contents: nil, attributes: nil)
 
         // Open file handle for writing
         do {
-            debugFileHandle = try FileHandle(forWritingTo: filePath)
+            debugFileHandle = try FileHandle(forWritingTo: openAIFilePath)
 
             // Write header
             let header = """
@@ -41,9 +41,37 @@ extension SmartTerminalProcessor {
                 debugFileHandle?.synchronizeFile() // Force flush to disk
             }
 
-            logger.info("[DEBUG] Created OpenAI updates log file at: \(filePath.path)")
+            logger.info("[DEBUG] Created OpenAI updates log file at: \(openAIFilePath.path)")
         } catch {
             logger.error("[DEBUG] Failed to create debug file: \(error.localizedDescription)")
+        }
+
+        // Create raw buffer log file
+        let rawBufferFilePath = logsDir.appendingPathComponent(rawBufferFilename)
+        FileManager.default.createFile(atPath: rawBufferFilePath.path, contents: nil, attributes: nil)
+
+        // Open raw buffer file handle
+        do {
+            rawBufferFileHandle = try FileHandle(forWritingTo: rawBufferFilePath)
+
+            // Write header
+            let bufferHeader = """
+            ========================================
+            VibeTunnelTalk - Raw Buffer Log
+            Started: \(Date())
+            Every decoded BufferSnapshot is logged here
+            ========================================
+
+            """
+
+            if let data = bufferHeader.data(using: .utf8) {
+                rawBufferFileHandle?.write(data)
+                rawBufferFileHandle?.synchronizeFile()
+            }
+
+            logger.info("[DEBUG] Created raw buffer log file at: \(rawBufferFilePath.path)")
+        } catch {
+            logger.error("[DEBUG] Failed to create raw buffer file: \(error.localizedDescription)")
         }
     }
 
@@ -134,6 +162,54 @@ extension SmartTerminalProcessor {
         if let data = entry.data(using: .utf8) {
             debugFileHandle.write(data)
             debugFileHandle.synchronizeFile() // Force flush to disk
+        }
+    }
+
+    func writeRawBufferToDebugFile(_ snapshot: BufferSnapshot, bufferNumber: Int) {
+        guard let rawBufferFileHandle = rawBufferFileHandle else {
+            return
+        }
+
+        // Create detailed timestamp with milliseconds
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+
+        // Extract text content
+        var lines: [String] = []
+        for (rowIndex, row) in snapshot.cells.enumerated() {
+            var line = ""
+            for cell in row {
+                line += cell.displayChar
+            }
+            // Show the row number for debugging
+            lines.append("[\(String(format: "%03d", rowIndex))] \(line)")
+        }
+        let textContent = lines.joined(separator: "\n")
+
+        // Create buffer entry with clear separation
+        let entry = """
+
+        ================================================================================
+        BUFFER #\(bufferNumber) - [\(timestamp)]
+        ================================================================================
+        Dimensions: \(snapshot.cols) cols x \(snapshot.rows) rows
+        Cursor: (\(snapshot.cursorX), \(snapshot.cursorY))
+        ViewportY: \(snapshot.viewportY)
+        --------------------------------------------------------------------------------
+        BUFFER CONTENT:
+        --------------------------------------------------------------------------------
+        \(textContent)
+        --------------------------------------------------------------------------------
+        END OF BUFFER #\(bufferNumber)
+        ================================================================================
+
+
+        """
+
+        if let data = entry.data(using: .utf8) {
+            rawBufferFileHandle.write(data)
+            rawBufferFileHandle.synchronizeFile() // Force flush to disk
         }
     }
 }
