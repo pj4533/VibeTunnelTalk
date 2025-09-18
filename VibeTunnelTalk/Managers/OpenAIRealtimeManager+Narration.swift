@@ -101,14 +101,17 @@ extension OpenAIRealtimeManager {
                 "instructions": """
                     ALWAYS use "we". NEVER say "Claude", "the system", "the terminal", etc.
 
-                    When output is minimal: 1-2 short sentences.
-                    When output is substantial: Summarize the RESULTS in detail:
-                    - For errors: Describe what the errors are
-                    - For search results: Describe what was found
-                    - For build output: Describe specific errors or warnings
-                    - For answers: State the actual answer, not just "we found it"
+                    CRITICAL: Check if this is INTERIM activity or FINAL results:
 
-                    Focus on WHAT happened, not just that something finished.
+                    INTERIM (action in progress):
+                    - Maximum 3-5 words
+                    - State ONLY the action
+                    - Examples: "Reading files", "Running tests", "Checking code"
+
+                    FINAL (completed with results):
+                    - Provide detailed summary
+                    - Describe errors, results, answers
+                    - State what was found/happened
                     """
             ]
         ]

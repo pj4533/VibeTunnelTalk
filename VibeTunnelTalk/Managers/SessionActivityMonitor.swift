@@ -413,15 +413,24 @@ class SessionActivityMonitor: ObservableObject {
 
         ALWAYS use "we". NEVER say "Claude", "the system", "the terminal", etc.
 
-        If output is brief: 1-2 short sentences about what we're doing.
-        If output contains significant results, errors, or answers: Summarize in detail:
-        - For build errors: Describe the specific errors found
-        - For search results: Describe what was actually found
-        - For test results: State how many passed/failed and what failed
-        - For answers to questions: State the actual answer
-        - For command output: Describe the important parts of the output
+        CRITICAL: Determine if this is an INTERIM update or a FINAL result:
 
-        Focus on the CONTENT and RESULTS, not just that something completed.
+        INTERIM updates (activity in progress):
+        - Be EXTREMELY brief: 3-5 words maximum
+        - State ONLY the action: "Reading the file", "Running tests", "Searching for matches"
+        - NO explanations, NO details, NO context
+        - Examples: "Checking the code", "Building now", "Looking at files"
+
+        FINAL results (command completed, errors found, results available):
+        - Provide detailed summary of WHAT happened:
+          * For errors: Describe the specific errors
+          * For search results: Describe what was found
+          * For test results: State pass/fail counts
+          * For answers: State the actual answer
+          * For command output: Describe key results
+
+        If you see "Task(", "Reading", "Running:", "Searching" → INTERIM (be ultra-brief)
+        If you see "Done", errors, results, answers, completion → FINAL (be detailed)
         """
     }
 
