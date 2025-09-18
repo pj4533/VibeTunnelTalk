@@ -5,6 +5,7 @@ import OSLog
 
 class OpenAIRealtimeManager: NSObject, ObservableObject {
     let logger = AppLogger.openAIRealtime
+    var statsLogger: OpenAIStatisticsLogger
 
     @Published var isConnected = false
     @Published var isListening = false
@@ -42,12 +43,14 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
 
     override init() {
         self.apiKey = ""
+        self.statsLogger = OpenAIStatisticsLogger(logger: AppLogger.openAIRealtime)
         super.init()
         setupAudioSession()
     }
 
     init(apiKey: String) {
         self.apiKey = apiKey
+        self.statsLogger = OpenAIStatisticsLogger(logger: AppLogger.openAIRealtime)
         super.init()
         setupAudioSession()
     }

@@ -34,6 +34,9 @@ extension OpenAIRealtimeManager {
 
     /// Disconnect from OpenAI
     func disconnect() {
+        // Force log any pending statistics before disconnecting
+        statsLogger.forceLogSummary()
+
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         stopAudioCapture()

@@ -162,6 +162,93 @@ extension Logger {
     }
 }
 
+// MARK: - OpenAI Statistics Logger
+
+/// Helper for logging OpenAI API statistics
+struct OpenAIStatisticsLogger {
+    private let logger: Logger
+    private var lastLogTime = Date()
+    private let logInterval: TimeInterval = 10.0 // Log summary every 10 seconds
+
+    private var stats = OpenAIStats()
+
+    struct OpenAIStats {
+        var audioChunksReceived = 0
+        var totalAudioBytes = 0
+        var transcriptDeltas = 0
+        var totalTranscriptChars = 0
+        var responsesStarted = 0
+        var responsesCompleted = 0
+        var errors = 0
+    }
+
+    init(logger: Logger) {
+        self.logger = logger
+    }
+
+    mutating func recordAudioChunk(bytes: Int) {
+        stats.audioChunksReceived += 1
+        stats.totalAudioBytes += bytes
+        checkAndLogSummary()
+    }
+
+    mutating func recordTranscriptDelta(chars: Int) {
+        stats.transcriptDeltas += 1
+        stats.totalTranscriptChars += chars
+        checkAndLogSummary()
+    }
+
+    mutating func recordResponseStarted() {
+        stats.responsesStarted += 1
+    }
+
+    mutating func recordResponseCompleted() {
+        stats.responsesCompleted += 1
+    }
+
+    mutating func recordError() {
+        stats.errors += 1
+    }
+
+    private mutating func checkAndLogSummary() {
+        let now = Date()
+        if now.timeIntervalSince(lastLogTime) >= logInterval && (stats.audioChunksReceived > 0 || stats.transcriptDeltas > 0) {
+            logSummary()
+            resetStats()
+            lastLogTime = now
+        }
+    }
+
+    private func logSummary() {
+        let avgAudioChunkSize = stats.audioChunksReceived > 0
+            ? stats.totalAudioBytes / stats.audioChunksReceived
+            : 0
+        let avgTranscriptDeltaSize = stats.transcriptDeltas > 0
+            ? stats.totalTranscriptChars / stats.transcriptDeltas
+            : 0
+
+        logger.info("""
+            🎵 OpenAI Activity Summary (last \(Int(logInterval))s):
+            • Audio: \(stats.audioChunksReceived) chunks, \(stats.totalAudioBytes) bytes (avg: \(avgAudioChunkSize) bytes/chunk)
+            • Transcript: \(stats.transcriptDeltas) deltas, \(stats.totalTranscriptChars) chars (avg: \(avgTranscriptDeltaSize) chars/delta)
+            • Responses: \(stats.responsesStarted) started, \(stats.responsesCompleted) completed
+            • Errors: \(stats.errors)
+            """)
+    }
+
+    private mutating func resetStats() {
+        stats = OpenAIStats()
+    }
+
+    mutating func forceLogSummary() {
+        if stats.audioChunksReceived > 0 || stats.transcriptDeltas > 0 || stats.responsesStarted > 0 {
+            logSummary()
+            resetStats()
+            lastLogTime = Date()
+        }
+    }
+}
+
 // MARK: - Buffer Statistics Logger
 
 /// Helper for logging buffer processing statistics
