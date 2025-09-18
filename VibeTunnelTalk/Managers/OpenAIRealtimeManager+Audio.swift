@@ -110,15 +110,40 @@ extension OpenAIRealtimeManager {
             // Create WAV header for PCM16 data
             let wavData = self.createWAVData(from: self.audioBufferData)
 
-            do {
-                self.audioPlayer = try AVAudioPlayer(data: wavData)
-                self.audioPlayer?.play()
-            } catch {
-                self.logger.error("[OPENAI-AUDIO] ❌ Failed to play audio: \(error.localizedDescription)")
+            // Clear buffer after creating WAV data
+            self.audioBufferData = Data()
+
+            // Check if audio is currently playing
+            if self.isPlayingAudio {
+                // Audio is playing, store this as the latest to play when current finishes
+                self.logger.info("[OPENAI-AUDIO] ⏸️ Audio currently playing, queuing new response")
+                self.latestAudioData = wavData
+            } else {
+                // No audio playing, play immediately
+                self.playAudioData(wavData)
+            }
+        }
+    }
+
+    func playAudioData(_ wavData: Data) {
+        do {
+            self.audioPlayer = try AVAudioPlayer(data: wavData)
+            self.audioPlayer?.delegate = self
+            self.audioPlayer?.play()
+            self.isPlayingAudio = true
+
+            DispatchQueue.main.async {
+                self.isSpeaking = true
             }
 
-            // Clear buffer
-            self.audioBufferData = Data()
+            self.logger.info("[OPENAI-AUDIO] ▶️ Started audio playback")
+        } catch {
+            self.logger.error("[OPENAI-AUDIO] ❌ Failed to play audio: \(error.localizedDescription)")
+            self.isPlayingAudio = false
+
+            DispatchQueue.main.async {
+                self.isSpeaking = false
+            }
         }
     }
 

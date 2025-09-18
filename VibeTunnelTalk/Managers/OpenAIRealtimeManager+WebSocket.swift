@@ -48,6 +48,8 @@ extension OpenAIRealtimeManager {
             self.isResponseInProgress = false
             self.activeResponseId = nil
             self.narrationQueue.removeAll()
+            self.isPlayingAudio = false
+            self.latestAudioData = nil
         }
     }
 
@@ -128,6 +130,8 @@ extension OpenAIRealtimeManager {
             self.isResponseInProgress = false
             self.activeResponseId = nil
             self.narrationQueue.removeAll()
+            self.isPlayingAudio = false
+            self.latestAudioData = nil
         }
 
         let formatter = DateFormatter()

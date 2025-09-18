@@ -37,6 +37,11 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     var audioQueue = DispatchQueue(label: "audio.queue")
     var audioBufferData = Data()
 
+    // Track if audio is currently playing
+    var isPlayingAudio = false
+    // Store the latest audio data to play when current playback finishes
+    var latestAudioData: Data?
+
     // Event subjects for external observation
     let functionCallRequested = PassthroughSubject<FunctionCall, Never>()
     let activityNarration = PassthroughSubject<String, Never>()
@@ -64,6 +69,31 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
 
         // Update the key
         apiKey = newKey
+    }
+}
+
+// MARK: - AVAudioPlayerDelegate
+
+extension OpenAIRealtimeManager: AVAudioPlayerDelegate {
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        audioQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            self.isPlayingAudio = false
+            self.logger.info("[OPENAI-AUDIO] ✅ Audio playback finished")
+
+            // Update speaking state
+            DispatchQueue.main.async {
+                self.isSpeaking = false
+            }
+
+            // If we have queued audio data, play it now
+            if let latestData = self.latestAudioData {
+                self.logger.info("[OPENAI-AUDIO] ▶️ Playing queued audio")
+                self.latestAudioData = nil
+                self.playAudioData(latestData)
+            }
+        }
     }
 }
 

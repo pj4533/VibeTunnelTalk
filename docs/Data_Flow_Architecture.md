@@ -108,6 +108,40 @@ The processed terminal updates are sent to OpenAI's Realtime API:
 - **Natural Pacing**: Narrates at appropriate moments without interrupting
 - **Concise Summaries**: Provides useful information without overwhelming detail
 
+#### Audio Playback Management
+
+The system implements an intelligent audio response queueing mechanism to handle rapid terminal updates without overwhelming the user with overlapping audio:
+
+**Current Implementation (Drop-and-Replace Strategy)**
+1. **Single Audio Slot**: Only one audio response can play at a time
+2. **Latest-Only Queueing**: When audio is currently playing:
+   - New responses replace any previously queued response
+   - Only the most recent update is retained for playback
+   - Intermediate responses are dropped to avoid stale information
+3. **Automatic Playback**: When current audio finishes:
+   - The system checks for queued audio
+   - If present, immediately plays the latest queued response
+   - Ensures users always hear the most recent terminal state
+
+**Technical Details**
+- `isPlayingAudio` flag tracks current playback state
+- `latestAudioData` stores the most recent audio response
+- AVAudioPlayerDelegate monitors playback completion
+- Audio data is pre-processed into WAV format for reliable playback
+
+**Rationale**
+This approach prevents audio confusion from overlapping speech while ensuring users receive the most current information. Rather than hearing a backlog of outdated updates, users get a single, relevant narration of the current state.
+
+**Future Improvements (Planned)**
+- **Intelligent Queue Management**: Maintain a queue of all responses rather than dropping
+- **Response Summarization**: Combine multiple missed updates into a single coherent summary
+- **Priority-Based Playback**: Identify critical updates that should interrupt current playback
+- **Adaptive Pacing**: Adjust playback speed based on update frequency
+- **Context-Aware Dropping**: Only drop truly redundant updates, preserve important state changes
+- **User Preferences**: Allow users to configure queueing behavior (drop vs. queue vs. summarize)
+
+These improvements will require deeper integration with OpenAI's context understanding to intelligently merge or prioritize updates based on their semantic importance rather than just temporal order.
+
 ### 5. Voice Command Processing
 
 The reverse flow enables voice control of Claude through natural speech.
@@ -141,9 +175,10 @@ The real-time architecture maintains synchronization through:
 - Graceful handling of connection loss
 
 #### Response Coordination
-- Updates queue while OpenAI is speaking
-- Accumulated changes sent after speech completes
-- Maintains conversational flow without interruption
+- Terminal updates accumulate while OpenAI is speaking
+- When audio is playing, new responses replace queued ones (drop-and-replace)
+- Latest update is played immediately after current speech completes
+- Maintains conversational flow without overwhelming audio overlap
 
 ## Data Flow Summary
 
