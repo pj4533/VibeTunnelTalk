@@ -46,7 +46,7 @@ extension OpenAIRealtimeManager {
                    - For tests: State pass/fail counts and what failed
                    - For answers: State the actual answer
 
-                Voice commands should execute without explanation.
+                IMPORTANT: You are ONLY a narrator. You cannot execute commands or interact with the terminal.
                 """,
                 "voice": "alloy",
                 "input_audio_format": "pcm16",
@@ -59,39 +59,6 @@ extension OpenAIRealtimeManager {
                     "threshold": 0.5,
                     "prefix_padding_ms": 300,
                     "silence_duration_ms": 500
-                ],
-                "tools": [
-                    [
-                        "type": "function",
-                        "name": "execute_terminal_command",
-                        "description": "Execute a command in the terminal",
-                        "parameters": [
-                            "type": "object",
-                            "properties": [
-                                "command": [
-                                    "type": "string",
-                                    "description": "The terminal command to execute"
-                                ]
-                            ],
-                            "required": ["command"]
-                        ]
-                    ],
-                    [
-                        "type": "function",
-                        "name": "control_session",
-                        "description": "Control the Claude session",
-                        "parameters": [
-                            "type": "object",
-                            "properties": [
-                                "action": [
-                                    "type": "string",
-                                    "enum": ["pause", "resume", "stop", "restart"],
-                                    "description": "The control action to perform"
-                                ]
-                            ],
-                            "required": ["action"]
-                        ]
-                    ]
                 ]
             ]
         ]

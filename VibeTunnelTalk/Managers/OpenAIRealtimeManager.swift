@@ -43,7 +43,6 @@ class OpenAIRealtimeManager: NSObject, ObservableObject {
     var latestAudioData: Data?
 
     // Event subjects for external observation
-    let functionCallRequested = PassthroughSubject<FunctionCall, Never>()
     let activityNarration = PassthroughSubject<String, Never>()
 
     override init() {
@@ -98,8 +97,3 @@ extension OpenAIRealtimeManager: AVAudioPlayerDelegate {
 }
 
 // MARK: - Supporting Types
-
-struct FunctionCall {
-    let name: String
-    let parameters: [String: Any]
-}

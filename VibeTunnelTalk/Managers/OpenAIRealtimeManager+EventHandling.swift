@@ -38,11 +38,12 @@ extension OpenAIRealtimeManager {
                 handleResponseTextDone(json)
 
             case "response.function_call_arguments.delta":
-                // Handle function call arguments
+                // Function calls removed - we're narration only
                 break
 
             case "response.function_call_arguments.done":
-                handleResponseFunctionCallDone(json)
+                // Function calls removed - we're narration only
+                break
 
             case "input_audio_buffer.speech_started":
                 // User started speaking
@@ -220,19 +221,6 @@ extension OpenAIRealtimeManager {
         }
     }
 
-    private func handleResponseFunctionCallDone(_ json: [String: Any]) {
-        // Function call complete
-        if let name = json["name"] as? String,
-           let argumentsString = json["arguments"] as? String,
-           let argumentsData = argumentsString.data(using: .utf8),
-           let parameters = try? JSONSerialization.jsonObject(with: argumentsData) as? [String: Any] {
-
-            let functionCall = FunctionCall(name: name, parameters: parameters)
-            DispatchQueue.main.async {
-                self.functionCallRequested.send(functionCall)
-            }
-        }
-    }
 
     private func handleSessionCreated(_ json: [String: Any]) {
         // Session created successfully
