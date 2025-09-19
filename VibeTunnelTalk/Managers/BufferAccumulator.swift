@@ -3,6 +3,9 @@ import OSLog
 
 /// Accumulates terminal buffer updates from real-time WebSocket streaming
 /// Simple approach: capture all unique content and send it to OpenAI without duplicates
+///
+/// DEPRECATED: Replaced by StreamingAccumulator which works with asciinema file streams
+@available(*, deprecated, message: "Use StreamingAccumulator for asciinema file-based streaming")
 class BufferAccumulator {
     private let logger = AppLogger.accumulator
     private var totalSnapshotsProcessed = 0

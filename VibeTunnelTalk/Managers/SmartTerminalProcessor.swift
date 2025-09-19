@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import OSLog
 
-/// Processes terminal buffer snapshots intelligently by detecting changes and sending them to OpenAI
+/// Processes terminal output from asciinema files and sends intelligent summaries to OpenAI
 class SmartTerminalProcessor: ObservableObject {
     let logger = AppLogger.terminalProcessor
     private let debouncedLogger: DebouncedLogger
@@ -11,28 +11,21 @@ class SmartTerminalProcessor: ObservableObject {
     // Dependencies
     private let openAIManager: OpenAIRealtimeManager
 
-    // Configuration
-    @Published var minChangeThreshold: Int = 5 // Minimum character changes to trigger update
-
     // State tracking
     @Published var isProcessing = false
     @Published var lastUpdate = Date()
-    @Published var totalSnapshotsProcessed = 0
+    @Published var totalEventsProcessed = 0
     @Published var totalUpdatesSent = 0
-    @Published var dataReductionRatio: Double = 0.0
 
-    // For diffing
+    // For tracking what we've sent
     internal var lastSentContent = ""
-    internal var lastBufferSnapshot: BufferSnapshot?
-
-    // Subscriptions
 
     // Debug files for logging
     var debugFileHandle: FileHandle?
-    var rawBufferFileHandle: FileHandle?
 
-    // WebSocket accumulator
-    private var currentAccumulator: BufferAccumulator?
+    // File reader and accumulator
+    private var fileReader: AsciinemaFileReader?
+    private var currentAccumulator: StreamingAccumulator?
 
     init(openAIManager: OpenAIRealtimeManager) {
         self.openAIManager = openAIManager
@@ -40,24 +33,22 @@ class SmartTerminalProcessor: ObservableObject {
         self.statsLogger = BufferStatisticsLogger(logger: AppLogger.terminalProcessor)
     }
 
-    /// Start processing buffer snapshots from WebSocket client
-    func startProcessingWithBufferClient(bufferClient: BufferWebSocketClient?, sessionId: String) async {
+    /// Start processing terminal output from asciinema file
+    func startProcessingWithFileReader(sessionId: String) async {
         logger.info("Starting smart terminal processor for session: \(sessionId)")
 
         // Create debug file for this session
         createDebugFile()
         logger.debug("Debug file created")
 
-        // Subscribe to WebSocket updates
-        guard let bufferClient = bufferClient else {
-            logger.warning("No WebSocket client provided")
-            return
-        }
+        // Create file reader
+        let reader = AsciinemaFileReader()
+        self.fileReader = reader
 
         // Create accumulator with intelligent thresholds
-        let accumulator = BufferAccumulator(
-            sizeThreshold: 100,    // Send when 100+ chars change (more responsive)
-            timeThreshold: 2.0     // Send after 2 seconds of inactivity
+        let accumulator = StreamingAccumulator(
+            sizeThreshold: 100,    // Send when 100+ chars accumulate
+            timeThreshold: 1.0     // Send after 1 second of inactivity (faster)
         ) { [weak self] content, changeCount in
             guard let self = self else { return }
 
@@ -69,56 +60,45 @@ class SmartTerminalProcessor: ObservableObject {
         }
 
         self.currentAccumulator = accumulator
-        logger.debug("Created accumulator (100 chars / 2.0s thresholds)")
+        logger.debug("Created streaming accumulator (100 chars / 1.0s thresholds)")
 
-        logger.debug("Subscribing to WebSocket updates")
-
-        // Subscribe to buffer updates from WebSocket
-        bufferClient.subscribe(to: sessionId) { [weak self] event in
+        // Start reading asciinema file
+        reader.startReading(sessionId: sessionId) { [weak self] newContent in
             guard let self = self else { return }
 
-            switch event {
-            case .bufferUpdate(let snapshot):
-                // Process buffer update
-                self.processWebSocketSnapshot(snapshot)
+            // Process new terminal output
+            self.processStreamingOutput(newContent)
+        }
 
-            case .bell:
-                self.logger.debug("Bell event received")
-                // Could play a bell sound here if desired
+        logger.debug("File reader started")
+        isProcessing = true
+        logger.info("✅ Processing started with complete terminal stream")
+    }
 
-            default:
-                break
+    /// Start processing buffer snapshots from WebSocket client (deprecated - kept for backwards compatibility)
+    func startProcessingWithBufferClient(bufferClient: BufferWebSocketClient?, sessionId: String) async {
+        // Redirect to file reader implementation
+        await startProcessingWithFileReader(sessionId: sessionId)
+    }
+
+    /// Process new terminal output from asciinema stream
+    private func processStreamingOutput(_ newContent: String) {
+        totalEventsProcessed += 1
+
+        // Write to debug file
+        if let handle = debugFileHandle {
+            let debugContent = "[Stream Event #\(totalEventsProcessed)]\n\(newContent)\n---\n"
+            if let data = debugContent.data(using: .utf8) {
+                handle.write(data)
             }
         }
 
-        logger.debug("WebSocket subscription completed")
-        isProcessing = true
-        logger.info("✅ Processing started")
-    }
+        // Record statistics
+        statsLogger.recordSnapshot(charsExtracted: newContent.count, charsChanged: newContent.count, sentToOpenAI: false)
 
-    /// Process a snapshot received via WebSocket
-    private func processWebSocketSnapshot(_ snapshot: BufferSnapshot) {
-        totalSnapshotsProcessed += 1
+        // Pass to accumulator - it will batch intelligently
+        currentAccumulator?.accumulate(newContent)
 
-        // Write raw buffer to debug file
-        writeRawBufferToDebugFile(snapshot, bufferNumber: totalSnapshotsProcessed)
-
-        // Processing snapshot
-
-        // Extract text content from buffer
-        let currentContent = extractTextFromBuffer(snapshot)
-        // Content extracted
-
-        // Check if content has changed from what we last sent
-        let changeCount = countChanges(from: lastSentContent, to: currentContent)
-
-        // Record statistics instead of logging each snapshot
-        statsLogger.recordSnapshot(charsExtracted: currentContent.count, charsChanged: changeCount, sentToOpenAI: false)
-
-        // Pass to accumulator - it will decide when to flush based on thresholds
-        currentAccumulator?.accumulate(snapshot, extractedContent: currentContent, changeCount: changeCount)
-
-        lastBufferSnapshot = snapshot
         lastUpdate = Date()
     }
 
@@ -127,15 +107,16 @@ class SmartTerminalProcessor: ObservableObject {
         logger.info("⏹️ Stopping smart terminal processing")
         statsLogger.forceLogSummary()
 
+        // Stop file reader
+        fileReader?.stopReading()
+        fileReader = nil
+
         // Stop accumulator and flush any pending data
         currentAccumulator?.stop()
         currentAccumulator = nil
 
         debugFileHandle?.closeFile()
         debugFileHandle = nil
-
-        rawBufferFileHandle?.closeFile()
-        rawBufferFileHandle = nil
 
         isProcessing = false
     }
@@ -145,74 +126,13 @@ class SmartTerminalProcessor: ObservableObject {
         stopProcessing()
     }
 
-    // MARK: - Buffer Processing
-
-    /// Extract text content from buffer snapshot
-    internal func extractTextFromBuffer(_ snapshot: BufferSnapshot) -> String {
-        var lines: [String] = []
-
-        for row in snapshot.cells {
-            var line = ""
-            for cell in row {
-                line += cell.displayChar
-            }
-            // Trim trailing spaces but preserve intentional spacing
-            lines.append(line.trimmingCharacters(in: .init(charactersIn: " ")))
-        }
-
-        // Remove empty lines from the end
-        while lines.last?.isEmpty == true {
-            lines.removeLast()
-        }
-
-        return lines.joined(separator: "\n")
-    }
-
-    /// Check if two buffers are effectively equal
-    private func areBuffersEqual(_ buffer1: BufferSnapshot, _ buffer2: BufferSnapshot) -> Bool {
-        // Quick dimension check
-        if buffer1.cols != buffer2.cols || buffer1.rows != buffer2.rows {
-            return false
-        }
-
-        // Check if cursor position changed significantly
-        if abs(buffer1.cursorX - buffer2.cursorX) > 5 || abs(buffer1.cursorY - buffer2.cursorY) > 2 {
-            return false
-        }
-
-        // Compare actual content
-        let content1 = extractTextFromBuffer(buffer1)
-        let content2 = extractTextFromBuffer(buffer2)
-
-        return content1 == content2
-    }
-
-    /// Count the number of character changes between two strings
-    internal func countChanges(from old: String, to new: String) -> Int {
-        // Simple character difference count
-        if old.isEmpty { return new.count }
-        if new.isEmpty { return old.count }
-
-        // Find common prefix
-        let commonPrefixLength = zip(old, new).prefix(while: { $0 == $1 }).count
-
-        // Find common suffix
-        let oldSuffix = old.suffix(old.count - commonPrefixLength)
-        let newSuffix = new.suffix(new.count - commonPrefixLength)
-        let commonSuffixLength = zip(oldSuffix.reversed(), newSuffix.reversed()).prefix(while: { $0 == $1 }).count
-
-        // Calculate changed region
-        let oldChangedLength = old.count - commonPrefixLength - commonSuffixLength
-        let newChangedLength = new.count - commonPrefixLength - commonSuffixLength
-
-        return max(oldChangedLength, newChangedLength)
-    }
+    // MARK: - Terminal Processing
 
     // MARK: - OpenAI Integration
 
     /// Send update to OpenAI
     internal func sendUpdateToOpenAI(_ content: String, changeCount: Int) {
-        logger.debug("Sending \(changeCount) changed chars to OpenAI")
+        logger.debug("Sending \(changeCount) chars to OpenAI")
 
         guard !content.isEmpty else {
             logger.debug("Skipping empty content")
@@ -227,17 +147,10 @@ class SmartTerminalProcessor: ObservableObject {
 
         totalUpdatesSent += 1
 
-        // Calculate data reduction ratio
-        let originalSize = totalSnapshotsProcessed * (80 * 24) // Approximate
-        let sentSize = totalUpdatesSent * content.count
-        if originalSize > 0 {
-            dataReductionRatio = 1.0 - (Double(sentSize) / Double(originalSize))
-        }
-
         // Update statistics
         statsLogger.recordSnapshot(charsExtracted: content.count, charsChanged: changeCount, sentToOpenAI: true)
 
-        logger.info("📤 Update #\(self.totalUpdatesSent): \(changeCount) chars, reduction: \(String(format: "%.1f%%", self.dataReductionRatio * 100))")
+        logger.info("📤 Update #\(self.totalUpdatesSent): \(changeCount) chars")
 
         // Format the terminal content for OpenAI
         let formattedContent = formatForOpenAI(content)

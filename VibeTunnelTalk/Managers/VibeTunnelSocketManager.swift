@@ -13,8 +13,8 @@ class VibeTunnelSocketManager: ObservableObject {
     var receiveBuffer = Data()
     let queue = DispatchQueue(label: "vibetunnel.socket", qos: .userInitiated)
 
-    // WebSocket client for real-time terminal snapshots
-    private var bufferWebSocketClient: BufferWebSocketClient?
+    // Session lifecycle client for monitoring session events
+    private var sessionLifecycleClient: SessionLifecycleClient?
 
     // Smart terminal processor for intelligent data filtering
     private var terminalProcessor: SmartTerminalProcessor?
@@ -75,8 +75,8 @@ class VibeTunnelSocketManager: ObservableObject {
         // Start connection
         connection?.start(queue: queue)
 
-        // Start buffer service for terminal snapshots
-        startBufferService(sessionId: sessionId)
+        // Start session monitoring
+        startSessionMonitoring(sessionId: sessionId)
 
     }
 
@@ -93,8 +93,8 @@ class VibeTunnelSocketManager: ObservableObject {
         connection = nil
         receiveBuffer.removeAll()
 
-        // Stop buffer service
-        stopBufferService()
+        // Stop session monitoring
+        stopSessionMonitoring()
 
         // Clean up smart processor
         terminalProcessor?.cleanup()
@@ -160,73 +160,72 @@ class VibeTunnelSocketManager: ObservableObject {
         })
     }
 
-    // MARK: - WebSocket Management
+    // MARK: - Session Monitoring
 
-    private func startBufferService(sessionId: String) {
-        logger.debug("Starting buffer service for session: \(sessionId)")
+    private func startSessionMonitoring(sessionId: String) {
+        logger.debug("Starting session monitoring for session: \(sessionId)")
 
-        // Use shared WebSocket client for real-time terminal snapshots
-        bufferWebSocketClient = BufferWebSocketClient.shared
-        logger.verbose("Using shared BufferWebSocketClient instance")
+        // Use shared session lifecycle client for monitoring
+        sessionLifecycleClient = SessionLifecycleClient.shared
+        logger.verbose("Using shared SessionLifecycleClient instance")
 
-        // Configure WebSocket client with auth service if available
+        // Configure lifecycle client with auth service if available
         if let authService = authService {
-            logger.verbose("Configuring WebSocket with auth service")
-            bufferWebSocketClient?.setAuthenticationService(authService)
+            logger.verbose("Configuring lifecycle client with auth service")
+            sessionLifecycleClient?.setAuthenticationService(authService)
         } else {
-            logger.warning("No auth service available for WebSocket client")
+            logger.warning("No auth service available for lifecycle client")
         }
 
-        // Store a strong reference to the WebSocket client
-        let client = bufferWebSocketClient
+        // Set up lifecycle event handler
+        sessionLifecycleClient?.setLifecycleHandler { [weak self] event in
+            switch event {
+            case .connected(let sid):
+                self?.logger.debug("Session connected: \(sid)")
+            case .disconnected(let sid):
+                self?.logger.debug("Session disconnected: \(sid)")
+                if sid == sessionId {
+                    self?.disconnect()
+                }
+            case .error(let message):
+                self?.logger.warning("Session error: \(message)")
+            }
+        }
 
-        // Start WebSocket connection
+        // Start lifecycle monitoring connection
+        sessionLifecycleClient?.connect()
+        logger.debug("Session lifecycle monitoring initiated")
+
+        // Start file-based terminal processing
         Task {
-            logger.verbose("Starting async WebSocket connection")
-
-            // Connect WebSocket (not async in BufferWebSocketClient)
-            client?.connect()
-            logger.debug("WebSocket connect() initiated")
-
-            // Double-check that we haven't been stopped in the meantime
-            guard self.bufferWebSocketClient != nil else {
-                logger.warning("WebSocket client was nil after connect")
-                return
-            }
-
-            // If we have a smart processor, let it handle the WebSocket updates
             if let terminalProcessor = terminalProcessor {
-                logger.debug("Starting smart processor with WebSocket")
-                await terminalProcessor.startProcessingWithBufferClient(bufferClient: bufferWebSocketClient, sessionId: sessionId)
-                logger.debug("Smart processor configured")
+                logger.debug("Starting smart processor with file reader")
+                await terminalProcessor.startProcessingWithFileReader(sessionId: sessionId)
+                logger.debug("Smart processor configured with asciinema file")
             } else {
-                logger.warning("Missing terminal processor or WebSocket client")
+                logger.warning("Missing terminal processor")
             }
         }
 
-        logger.debug("Buffer service started")
+        logger.debug("Session monitoring started")
     }
 
-    private func stopBufferService() {
-        logger.debug("Stopping buffer service")
+    private func stopSessionMonitoring() {
+        logger.debug("Stopping session monitoring")
 
-        // Capture reference to current webSocketClient before clearing it
-        let currentWebSocketClient = bufferWebSocketClient
-        bufferWebSocketClient = nil  // Clear reference immediately to prevent race conditions
+        // Clear lifecycle handler
+        sessionLifecycleClient?.setLifecycleHandler { _ in }
+        sessionLifecycleClient = nil
 
         // Stop the smart processor if it's running
         Task {
-            if let terminalProcessor = terminalProcessor, currentWebSocketClient != nil {
-                logger.debug("Stopping WebSocket processing")
+            if let terminalProcessor = terminalProcessor {
+                logger.debug("Stopping file-based processing")
                 terminalProcessor.stopProcessing()
             }
-
-            // Note: We don't disconnect the shared WebSocket client here since it might be
-            // used by other components (like TerminalBufferView)
-            logger.verbose("Keeping shared WebSocket client connected")
         }
 
-        logger.info("[VIBETUNNEL-WEBSOCKET] stopBufferService completed")
+        logger.info("Session monitoring stopped")
     }
 }
 

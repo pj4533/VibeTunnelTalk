@@ -16,9 +16,14 @@ enum TerminalWebSocketEvent {
 
 /// WebSocket client for real-time terminal buffer streaming.
 ///
+/// DEPRECATED: This class is replaced by AsciinemaFileReader for terminal output
+/// and SessionLifecycleClient for session management.
+/// BufferWebSocketClient is kept for backwards compatibility but should not be used.
+///
 /// BufferWebSocketClient establishes a WebSocket connection to the server
 /// to receive terminal output and events in real-time. It handles automatic
 /// reconnection, binary message parsing, and event distribution to subscribers.
+@available(*, deprecated, message: "Use AsciinemaFileReader for terminal output and SessionLifecycleClient for session events")
 @MainActor
 class BufferWebSocketClient: NSObject, ObservableObject {
     static let shared = BufferWebSocketClient()
