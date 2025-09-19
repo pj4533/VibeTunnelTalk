@@ -10,6 +10,7 @@ class SmartTerminalProcessor: ObservableObject {
 
     // Dependencies
     private let openAIManager: OpenAIRealtimeManager
+    private let debugSettings = DebugSettings.shared
 
     // State tracking
     @Published var isProcessing = false
@@ -37,9 +38,11 @@ class SmartTerminalProcessor: ObservableObject {
     func startProcessingWithFileReader(sessionId: String) async {
         logger.info("Starting smart terminal processor for session: \(sessionId)")
 
-        // Create debug file for this session
-        createDebugFile()
-        logger.debug("Debug file created")
+        // Create debug file for this session (if debug files are enabled)
+        if debugSettings.saveDebugFiles {
+            createDebugFile()
+            logger.debug("Debug file created")
+        }
 
         // Create file reader
         let reader = AsciinemaFileReader()
@@ -80,9 +83,27 @@ class SmartTerminalProcessor: ObservableObject {
     private func processStreamingOutput(_ newContent: String) {
         totalEventsProcessed += 1
 
-        // Write to debug file
-        if let handle = debugFileHandle {
-            let debugContent = "[Stream Event #\(totalEventsProcessed)]\n\(newContent)\n---\n"
+        // Write content to debug file for reference (if debug files are enabled)
+        if debugSettings.saveDebugFiles, let handle = debugFileHandle {
+            let debugContent: String
+
+            if debugSettings.logRawTerminalOutput {
+                // Log raw output when debug setting is enabled
+                debugContent = """
+                [Stream Event #\(totalEventsProcessed)]
+                \(newContent)
+                ---\n
+                """
+            } else {
+                // Log cleaned output by default
+                let cleanedContent = TerminalOutputCleaner.formatCleanedOutput(newContent)
+                debugContent = """
+                [Stream Event #\(totalEventsProcessed)]
+                \(cleanedContent)
+                ---\n
+                """
+            }
+
             if let data = debugContent.data(using: .utf8) {
                 handle.write(data)
             }
@@ -151,7 +172,26 @@ class SmartTerminalProcessor: ObservableObject {
         let formattedContent = formatForOpenAI(content)
 
         // Write the formatted content to debug file (what we're actually sending to OpenAI)
-        writeToDebugFile(formattedContent)
+        if debugSettings.saveDebugFiles, let handle = debugFileHandle {
+            let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+            let outputType = debugSettings.logRawTerminalOutput ? "RAW" : "CLEANED"
+            let debugContent = """
+
+            [\(timestamp)] - Update #\(totalUpdatesSent)
+            ----------------------------------------
+            Events processed: \(totalEventsProcessed)
+            Characters sent: \(content.count)
+            Output type: \(outputType)
+            ----------------------------------------
+            CONTENT SENT TO OPENAI:
+            \(formattedContent)
+            ========================================
+
+            """
+            if let data = debugContent.data(using: .utf8) {
+                handle.write(data)
+            }
+        }
 
         // Send to OpenAI
         openAIManager.sendTerminalContext(formattedContent)
@@ -159,11 +199,16 @@ class SmartTerminalProcessor: ObservableObject {
 
     /// Format terminal content for OpenAI
     private func formatForOpenAI(_ content: String) -> String {
-        // Simply pass through the terminal content with minimal formatting
+        // Use raw or cleaned output based on debug setting
+        let outputContent = debugSettings.logRawTerminalOutput
+            ? content
+            : TerminalOutputCleaner.formatCleanedOutput(content)
+
+        // Simply pass through the content with minimal formatting
         // Let OpenAI's prompt handle all the parsing and context awareness
         return """
         [Terminal Output]
-        \(content)
+        \(outputContent)
         """
     }
 

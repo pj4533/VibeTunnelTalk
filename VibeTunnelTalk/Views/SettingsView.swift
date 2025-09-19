@@ -8,6 +8,8 @@ struct SettingsView: View {
 
     @State private var apiKey: String = ""
     @State private var showAPIKeySaved = false
+    @StateObject private var debugSettings = DebugSettings.shared
+    @Environment(\.dismiss) private var dismiss
 
     let onSave: () -> Void
 
@@ -21,9 +23,7 @@ struct SettingsView: View {
                 Spacer()
                 Button("Done") {
                     onSave()
-                    if let window = NSApplication.shared.keyWindow {
-                        window.close()
-                    }
+                    dismiss()
                 }
             }
             .padding()
@@ -110,8 +110,30 @@ struct SettingsView: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
 
-                            Button("Open Logs Folder") {
-                                openLogsFolder()
+                            Divider()
+
+                            Toggle("Log raw terminal output (with ANSI codes)", isOn: $debugSettings.logRawTerminalOutput)
+                                .help("When enabled, logs raw terminal output with all ANSI escape codes instead of cleaned output")
+
+                            Toggle("Verbose logging", isOn: $debugSettings.verboseLogging)
+                                .help("Enable verbose debug logging in console")
+
+                            Toggle("Save debug files", isOn: $debugSettings.saveDebugFiles)
+                                .help("Save detailed debug logs to disk")
+
+                            Divider()
+
+                            HStack {
+                                Button("Open Logs Folder") {
+                                    openLogsFolder()
+                                }
+
+                                Spacer()
+
+                                Button("Reset Debug Settings") {
+                                    debugSettings.resetToDefaults()
+                                }
+                                .foregroundColor(.orange)
                             }
                         }
                     }
