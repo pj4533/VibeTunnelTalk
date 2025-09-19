@@ -108,7 +108,15 @@ class ContentViewModel: ObservableObject {
             openAIManager.connect()
         }
 
-        isConnecting = false
+        // Set a timeout to reset isConnecting if connection takes too long
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            guard let self = self else { return }
+            // If still connecting after 5 seconds and not connected, reset the flag
+            if self.isConnecting && !self.socketManager.isConnected {
+                self.isConnecting = false
+                self.logger.warning("Connection timeout - resetting isConnecting flag")
+            }
+        }
     }
 
     func onSettingsSaved() {
@@ -147,6 +155,16 @@ class ContentViewModel: ObservableObject {
                     // Lost authentication, disconnect
                     self?.socketManager.disconnect()
                     self?.isAuthenticated = false
+                }
+            }
+            .store(in: &cancelBag)
+
+        // Monitor socket connection status to reset isConnecting
+        socketManager.$isConnected
+            .sink { [weak self] connected in
+                if connected {
+                    // Connection succeeded, reset isConnecting flag
+                    self?.isConnecting = false
                 }
             }
             .store(in: &cancelBag)
