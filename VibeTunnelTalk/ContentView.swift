@@ -13,7 +13,6 @@ struct ContentView: View {
     private let logger = AppLogger.ui
     @StateObject private var socketManager = VibeTunnelSocketManager()
     @StateObject private var openAIManager = OpenAIRealtimeManager()
-    @StateObject private var commandProcessor = VoiceCommandProcessor()
     @StateObject private var authService = VibeTunnelAuthService()
 
     @State private var availableSessions: [String] = []
@@ -158,16 +157,6 @@ struct ContentView: View {
         socketManager.configureSmartProcessing(with: openAIManager)
         logger.info("[CONTENT] ✅ Smart terminal processing configured")
 
-        // Connect OpenAI function calls to command processor
-        openAIManager.functionCallRequested
-            .sink { functionCall in
-                self.logger.error("🚨🚨🚨 CONTENTVIEW: OpenAI requested function call")
-                commandProcessor.processFunctionCall(functionCall) { command in
-                    self.logger.error("🚨🚨🚨 CONTENTVIEW: About to send command: \(command)")
-                    socketManager.sendInput(command)
-                }
-            }
-            .store(in: &cancelBag)
 
         // Monitor authentication status
         authService.$isAuthenticated
