@@ -2,13 +2,20 @@
 
 ## Overview
 
-VibeTunnelTalk creates a voice interface for Claude Code sessions by monitoring terminal output and enabling voice control. The application uses a simplified polling-based architecture that leverages VibeTunnel's server-side terminal processing capabilities.
+VibeTunnelTalk creates a voice interface for Claude Code sessions by monitoring terminal output and enabling voice narration. The application uses a file-based architecture that reads complete terminal output from asciinema files created by VibeTunnel, providing 100% reliable data capture without any loss from debouncing or network issues.
 
 ## Architecture Components
 
-### 1. Terminal Buffer Streaming
+### 1. Terminal Data Sources
 
-VibeTunnelTalk connects to VibeTunnel sessions through two primary mechanisms:
+VibeTunnelTalk uses two primary data sources:
+
+#### Asciinema Files (Primary Data Source)
+- **Path**: `~/.vibetunnel/control/{session-id}/stdout`
+- **Format**: Asciinema v2 (JSONL - JSON Lines)
+- **Purpose**: Complete terminal output capture
+- **Benefits**: 100% data capture, no debouncing losses
+- **Direction**: VibeTunnel → File → VibeTunnelTalk
 
 #### IPC Socket (Control Channel)
 - **Path**: `~/.vibetunnel/control/{session-id}/ipc.sock`
@@ -16,245 +23,129 @@ VibeTunnelTalk connects to VibeTunnel sessions through two primary mechanisms:
 - **Protocol**: Binary message format with 5-byte header
 - **Direction**: VibeTunnelTalk → VibeTunnel
 
-#### WebSocket Stream (Data Channel)
-- **Endpoint**: `ws://localhost:4020/buffers`
-- **Purpose**: Receives real-time terminal buffer updates as binary data
-- **Protocol**: WebSocket with binary frame streaming
-- **Connection**: Persistent connection with automatic reconnection
-- **Direction**: VibeTunnel → VibeTunnelTalk
+### 2. Asciinema File Format
 
-The WebSocket implementation includes:
-- JWT authentication via both query parameter and Authorization header
-- Binary buffer format with magic bytes (0xBF for frames, 0x5654 for buffers)
-- Automatic reconnection with exponential backoff
-- Session subscription management via JSON messages
-- Ping-based connection health monitoring
+The asciinema v2 format provides complete terminal capture:
 
-### 2. Buffer Snapshot Structure
+```json
+// Line 1: Header
+{"version": 2, "width": 80, "height": 24, "timestamp": 1234567890}
 
-VibeTunnel provides a complete terminal snapshot that includes:
-
-```swift
-struct BufferSnapshot {
-    let cols: Int           // Terminal width in columns
-    let rows: Int           // Terminal height in rows
-    let viewportY: Int      // Current scroll position
-    let cursorX: Int        // Cursor X position
-    let cursorY: Int        // Cursor Y position
-    let cells: [[BufferCell]] // 2D grid of terminal cells
-}
-
-struct BufferCell {
-    let char: String        // The actual character
-    let width: Int          // Character width (1 or 2 for wide chars)
-    let fg: Int?           // Foreground color (ANSI palette index)
-    let bg: Int?           // Background color (ANSI palette index)
-    let attributes: Int?    // Text attributes (bold, italic, etc.)
-}
+// Lines 2+: Events (as arrays)
+[0.123, "o", "Hello World\n"]      // Output event
+[0.456, "o", "$ ls -la\n"]         // More output
+[1.234, "r", "80x40"]              // Resize event
 ```
 
-This snapshot represents the **exact text content** displayed in Claude's terminal, with all formatting preserved. VibeTunnel handles all the complex ANSI escape sequence parsing, terminal emulation, and buffer management on the server side.
+Event types:
+- `"o"`: Terminal output
+- `"i"`: User input
+- `"r"`: Terminal resize
+- `"m"`: Marker/annotation
 
-### 3. Smart Terminal Processing
+## Data Flow Sequence
 
-The Smart Terminal Processor is the brain of the narration system, converting raw buffer snapshots into intelligent voice narration.
+### 1. Session Connection
+1. User selects a VibeTunnel session
+2. `VibeTunnelSocketManager` connects to IPC socket
+3. `AsciinemaFileReader` starts monitoring the stdout file
+4. `SmartTerminalProcessor` initializes with `StreamingAccumulator`
 
-#### Processing Pipeline
+### 2. Terminal Output Processing
 
-1. **Buffer Reception**
-   - `BufferWebSocketClient` maintains persistent WebSocket connection
-   - Receives real-time binary buffer updates as they occur
-   - Decodes binary format to `BufferSnapshot` structures
-   - No need for ANSI parsing or terminal emulation
+```
+VibeTunnel Terminal → Asciinema File → AsciinemaFileReader
+                                           ↓
+                                   StreamingAccumulator
+                                           ↓
+                                   SmartTerminalProcessor
+                                           ↓
+                                    OpenAIRealtimeManager
+```
 
-2. **Text Extraction**
-   - Processor extracts plain text from the 2D cell grid
-   - Preserves logical structure (lines, indentation)
-   - Trims unnecessary whitespace while maintaining formatting
+#### AsciinemaFileReader
+- Monitors file for new content
+- Parses JSONL events
+- Extracts terminal output
+- Sends to accumulator
 
-3. **Intelligent Accumulation**
-   - Uses `BufferAccumulator` with configurable thresholds
-   - Size threshold: Sends when 100+ characters have changed
-   - Time threshold: Sends after 2 seconds of inactivity
-   - Prevents overwhelming the voice interface with rapid changes
+#### StreamingAccumulator
+- Batches output intelligently
+- Size threshold: 100 characters
+- Time threshold: 1 second
+- Simpler than WebSocket accumulator (no change detection needed)
 
-4. **Change Detection & Filtering**
-   - Compares accumulated content with previously sent content
-   - Calculates character-level differences
-   - Skips updates when OpenAI is currently speaking
-   - Queues changes during speech for later processing
+#### SmartTerminalProcessor
+- Cleans terminal output
+- Formats for OpenAI
+- Manages debug logging
+- Tracks statistics
 
-#### Data Reduction
-The processor achieves significant data reduction:
-- Only sends meaningful changes, not every buffer update
-- Filters out UI chrome and redundant updates
-- Typically achieves 80-90% reduction in data sent to OpenAI
+### 3. Voice Narration
 
-### 4. Voice Narration Pipeline
+The `OpenAIRealtimeManager` receives processed terminal content and:
+1. Converts text to contextual narration
+2. Streams audio responses
+3. Implements drop-and-replace audio queueing
+4. Manages voice activity detection
 
-Once significant changes are detected, they flow through the voice narration system.
+### 4. User Input
 
-#### OpenAI Integration
-The processed terminal updates are sent to OpenAI's Realtime API:
+Voice commands are disabled - VibeTunnelTalk is purely a narrator:
+- No function calling capabilities
+- No command execution
+- Only provides voice narration of terminal activity
 
-1. **Context Formatting**: Terminal content is wrapped with context markers
-2. **Intelligent Analysis**: OpenAI analyzes what Claude is doing
-3. **Narrative Generation**: Creates appropriate voice narration
-4. **Speech Synthesis**: Converts narration to natural speech
+## Key Components
 
-#### Narration Characteristics
-- **Activity Awareness**: Recognizes when Claude is thinking, coding, debugging
-- **Contextual Relevance**: Focuses on important changes, ignores noise
-- **Natural Pacing**: Narrates at appropriate moments without interrupting
-- **Concise Summaries**: Provides useful information without overwhelming detail
+### AsciinemaFileReader (`Services/AsciinemaFileReader.swift`)
+- Monitors asciinema files for new content
+- Parses v2 format (JSONL)
+- Extracts terminal output events
+- Provides real-time updates
 
-#### Audio Playback Management
+### StreamingAccumulator (`Managers/StreamingAccumulator.swift`)
+- Simpler than BufferAccumulator
+- Optimized for complete data streams
+- No complex change detection needed
+- Faster 1-second time threshold
 
-The system implements an intelligent audio response queueing mechanism to handle rapid terminal updates without overwhelming the user with overlapping audio:
+### SmartTerminalProcessor (`Managers/SmartTerminalProcessor.swift`)
+- Processes terminal output from files
+- Manages accumulation and batching
+- Formats content for OpenAI
+- Handles debug logging
 
-**Current Implementation (Drop-and-Replace Strategy)**
-1. **Single Audio Slot**: Only one audio response can play at a time
-2. **Latest-Only Queueing**: When audio is currently playing:
-   - New responses replace any previously queued response
-   - Only the most recent update is retained for playback
-   - Intermediate responses are dropped to avoid stale information
-3. **Automatic Playback**: When current audio finishes:
-   - The system checks for queued audio
-   - If present, immediately plays the latest queued response
-   - Ensures users always hear the most recent terminal state
+### VibeTunnelSocketManager (`Managers/VibeTunnelSocketManager.swift`)
+- Manages IPC socket connection
+- Coordinates file reader lifecycle
+- Handles session discovery
+- Sends terminal input commands
 
-**Technical Details**
-- `isPlayingAudio` flag tracks current playback state
-- `latestAudioData` stores the most recent audio response
-- AVAudioPlayerDelegate monitors playback completion
-- Audio data is pre-processed into WAV format for reliable playback
+## Advantages of File-Based Architecture
 
-**Rationale**
-This approach prevents audio confusion from overlapping speech while ensuring users receive the most current information. Rather than hearing a backlog of outdated updates, users get a single, relevant narration of the current state.
+1. **100% Data Capture**: No loss from WebSocket debouncing
+2. **Local Reliability**: No network issues or disconnections
+3. **Simple Implementation**: No complex binary protocol
+4. **Complete History**: Full session replay capability
+5. **Faster Response**: 1-second vs 2-second accumulation
 
-**Future Improvements (Planned)**
-- **Intelligent Queue Management**: Maintain a queue of all responses rather than dropping
-- **Response Summarization**: Combine multiple missed updates into a single coherent summary
-- **Priority-Based Playback**: Identify critical updates that should interrupt current playback
-- **Adaptive Pacing**: Adjust playback speed based on update frequency
-- **Context-Aware Dropping**: Only drop truly redundant updates, preserve important state changes
-- **User Preferences**: Allow users to configure queueing behavior (drop vs. queue vs. summarize)
+## Future Improvements
 
-These improvements will require deeper integration with OpenAI's context understanding to intelligently merge or prioritize updates based on their semantic importance rather than just temporal order.
+1. **Enhanced Processing**:
+   - Command boundary detection
+   - ANSI escape sequence parsing
+   - Semantic content extraction
 
-### 5. Voice Command Processing
+3. **Multi-Session Support**:
+   - Monitor multiple sessions simultaneously
+   - Cross-session context awareness
+   - Unified narration
 
-The reverse flow enables voice control of Claude through natural speech.
+## Performance Characteristics
 
-#### Audio Pipeline
-1. **Capture**: Mac's microphone captures voice at 24kHz PCM16 mono
-2. **Streaming**: Audio streams continuously to OpenAI while speaking
-3. **Recognition**: OpenAI converts speech to text in real-time
-4. **Intent Analysis**: Determines what action the user wants
-
-#### Command Execution
-1. **Command Generation**: OpenAI creates appropriate terminal commands
-2. **IPC Transmission**: Commands sent through Unix domain socket
-3. **Terminal Injection**: VibeTunnel injects input into Claude's terminal
-4. **Response Monitoring**: Buffer updates show command results
-
-### 6. System Synchronization
-
-The real-time architecture maintains synchronization through:
-
-#### WebSocket Streaming
-- Real-time buffer updates as they occur
-- Binary protocol for efficient data transfer
-- Complete buffer snapshots ensure state consistency
-- Cursor position and viewport tracked for context
-
-#### Connection Management
-- IPC socket for reliable command delivery
-- WebSocket with automatic reconnection and exponential backoff
-- Session re-subscription after reconnection
-- Graceful handling of connection loss
-
-#### Response Coordination
-- Terminal updates accumulate while OpenAI is speaking
-- When audio is playing, new responses replace queued ones (drop-and-replace)
-- Latest update is played immediately after current speech completes
-- Maintains conversational flow without overwhelming audio overlap
-
-## Data Flow Summary
-
-The complete data flow creates a continuous feedback loop:
-
-1. **Terminal State** → VibeTunnel maintains complete terminal buffer
-2. **Buffer Streaming** → WebSocket delivers real-time buffer updates
-3. **Binary Decoding** → BufferWebSocketClient decodes binary frames to snapshots
-4. **Intelligent Accumulation** → BufferAccumulator batches changes based on size/time
-5. **Text Extraction** → Smart processor extracts plain text from cell grid
-6. **Voice Narration** → OpenAI generates and speaks contextual narration
-7. **Voice Commands** → User speech interpreted by OpenAI
-8. **Command Execution** → Commands sent via IPC socket to terminal
-9. **Terminal Update** → Claude responds, triggering new buffer updates
-10. **Cycle Continues** → WebSocket immediately streams the changes
-
-## Key Architecture Benefits
-
-### Simplicity
-- No complex ANSI parsing or terminal emulation needed
-- VibeTunnel handles all terminal complexity server-side
-- Clean separation between data fetching and processing
-
-### Reliability
-- WebSocket provides immediate, real-time updates
-- Complete state in each snapshot (no state synchronization issues)
-- Automatic reconnection with exponential backoff
-- Clear error handling and session management
-
-### Performance
-- Efficient binary buffer format for minimal overhead
-- Intelligent accumulation reduces OpenAI API calls
-- Real-time streaming eliminates polling latency
-- Size and time thresholds optimize responsiveness
-
-### Maintainability
-- Minimal code surface area
-- Clear data flow with single source of truth
-- Well-defined interfaces between components
-
-## Technical Implementation
-
-### Core Components
-
-1. **BufferWebSocketClient** (`Services/WebSocket/BufferWebSocketClient.swift`)
-   - Maintains persistent WebSocket connection to `/buffers` endpoint
-   - Handles binary message decoding with magic byte validation
-   - Manages session subscriptions and automatic reconnection
-   - Publishes buffer updates to subscribers
-   - Implemented as shared singleton for unified connection management
-
-2. **TerminalBufferViewModel** (`ViewModels/TerminalBufferViewModel.swift`)
-   - Bridges WebSocket buffer updates to SwiftUI views
-   - Subscribes to BufferWebSocketClient for real-time updates
-   - Manages @Published properties for reactive UI updates
-   - Handles connection state and error management
-
-3. **SmartTerminalProcessor** (`Managers/SmartTerminalProcessor.swift`)
-   - Subscribes to WebSocket buffer updates
-   - Uses BufferAccumulator for intelligent batching
-   - Extracts and compares text content
-   - Manages communication with OpenAI
-
-4. **BufferAccumulator** (`Services/BufferAccumulator.swift`)
-   - Accumulates buffer changes based on size/time thresholds
-   - Prevents overwhelming OpenAI with rapid updates
-   - Configurable thresholds for different use cases
-
-5. **VibeTunnelSocketManager** (`Managers/VibeTunnelSocketManager.swift`)
-   - Manages IPC socket connection
-   - Sends terminal input commands
-   - Coordinates WebSocket client lifecycle
-
-6. **OpenAIRealtimeManager** (`Managers/OpenAIRealtimeManager.swift`)
-   - WebSocket connection to OpenAI Realtime API
-   - Audio streaming and speech synthesis
-   - Voice command processing
-
-This architecture provides a robust, maintainable foundation for voice-controlled terminal interaction while leveraging VibeTunnel's powerful terminal processing capabilities.
+- **Data Completeness**: 100% capture rate
+- **Latency**: Near-instant file reading
+- **Reliability**: Local filesystem reliability
+- **Memory**: Minimal overhead
+- **Scalability**: Limited only by filesystem

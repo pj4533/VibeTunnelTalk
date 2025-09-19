@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VibeTunnelTalk is a native macOS application built with SwiftUI that provides real-time voice narration and control for Claude Code sessions running through VibeTunnel. The app connects to VibeTunnel's IPC socket infrastructure to monitor terminal output and uses OpenAI's Realtime API for bidirectional voice interaction.
+VibeTunnelTalk is a native macOS application built with SwiftUI that provides real-time voice narration for Claude Code sessions running through VibeTunnel. The app reads terminal output from asciinema files created by VibeTunnel and uses OpenAI's Realtime API for voice narration (no command execution).
 
 ## Build and Development Commands
 
@@ -40,37 +40,35 @@ open VibeTunnelTalk.xcodeproj
 
 ## Architecture
 
-The application uses a real-time WebSocket-based architecture that leverages VibeTunnel's server-side terminal processing capabilities.
+The application uses a file-based architecture that reads complete terminal output from asciinema files, ensuring 100% data capture without any loss from debouncing.
 
 ### Data Flow Architecture
 
 **Important**: For a comprehensive understanding of how data flows through the application, refer to `docs/Data_Flow_Architecture.md`. This document explains:
-- How VibeTunnelTalk receives real-time terminal buffer updates via WebSocket
-- The binary protocol with magic byte validation and efficient data transfer
-- The intelligent accumulation and change detection pipeline
-- The bidirectional voice communication flow
-- The complete data flow from buffer streaming to voice narration and back
+- How VibeTunnelTalk reads terminal output from asciinema files
+- The asciinema v2 format (JSONL) parsing
+- The intelligent accumulation pipeline with StreamingAccumulator
+- The voice narration flow through OpenAI
+- Why file-based is superior to WebSocket streaming
 
 ### Core Components
 
 1. **VibeTunnelSocketManager**: Manages Unix domain socket connections to VibeTunnel sessions
    - Implements the VibeTunnel IPC protocol for sending commands
-   - Coordinates the WebSocket client lifecycle
+   - Coordinates the asciinema file reader lifecycle
    - Located at: `VibeTunnelTalk/Managers/VibeTunnelSocketManager.swift`
 
-2. **BufferWebSocketClient**: Real-time WebSocket connection for terminal buffer streaming
-   - Establishes WebSocket connection to VibeTunnel's `/buffers` endpoint at `ws://localhost:4020/buffers`
-   - Receives binary buffer updates in real-time with magic byte validation (0xBF for frames, 0x5654 for buffers)
-   - Implements JWT authentication via both query parameter AND Authorization header (matching iOS implementation)
-   - Automatic reconnection with exponential backoff
-   - Session subscription management via JSON messages
-   - Ping-based connection health monitoring (30-second intervals)
-   - Located at: `VibeTunnelTalk/Services/WebSocket/BufferWebSocketClient.swift`
+2. **AsciinemaFileReader**: Reads terminal output from asciinema files
+   - Monitors asciinema files at `~/.vibetunnel/control/{sessionId}/stdout`
+   - Parses asciinema v2 format (JSONL)
+   - Provides 100% complete terminal output capture
+   - No data loss from debouncing or network issues
+   - Located at: `VibeTunnelTalk/Services/AsciinemaFileReader.swift`
 
-3. **SmartTerminalProcessor**: Processes buffer snapshots for intelligent narration
-   - Subscribes to WebSocket buffer updates via BufferWebSocketClient
-   - Uses BufferAccumulator for intelligent batching (100 char size / 2 sec time thresholds)
-   - Extracts plain text from buffer cell grid
+3. **SmartTerminalProcessor**: Processes terminal output for intelligent narration
+   - Reads terminal output from AsciinemaFileReader
+   - Uses StreamingAccumulator for batching (100 char size / 1 sec time thresholds)
+   - Simpler than WebSocket approach - no change detection needed
    - Manages communication with OpenAI
    - Located at: `VibeTunnelTalk/Managers/SmartTerminalProcessor.swift`
 
@@ -85,10 +83,6 @@ The application uses a real-time WebSocket-based architecture that leverages Vib
    - Uses AVAudioPlayerDelegate for playback completion tracking
    - Located at: `VibeTunnelTalk/Managers/OpenAIRealtimeManager.swift`
 
-5. **VoiceCommandProcessor**: Processes voice commands into terminal actions
-   - Maps voice intents to terminal commands
-   - Located at: `VibeTunnelTalk/Managers/VoiceCommandProcessor.swift`
-
 ### VibeTunnel Integration
 
 **IMPORTANT**: For all information about VibeTunnel architecture, authentication, and integration details, refer to `docs/vibetunnel_architecture.md`. This is where you should look for all information about VibeTunnel. Anything you can't find in this architecture document, you can find in the actual VibeTunnel code.
@@ -97,17 +91,14 @@ The application uses a real-time WebSocket-based architecture that leverages Vib
 - Web/Server: `~/Developer/vibetunnel`
 - iOS/Swift: `~/Developer/vibetunnel/ios` (Contains Swift implementations for terminal buffer handling, models, and rendering)
 
-**IMPORTANT**: When troubleshooting VibeTunnel integration issues, ALWAYS check the iOS implementation at `~/Developer/vibetunnel/ios` as it provides working Swift code that maps directly to our macOS implementations. Key files to reference:
-- `BufferWebSocketClient.swift` - WebSocket client implementation
-- `WebSocketProtocol.swift` - WebSocket connection patterns
-- Terminal buffer decoding and handling patterns
+**IMPORTANT**: When troubleshooting VibeTunnel integration issues, ALWAYS check the iOS implementation at `~/Developer/vibetunnel/ios` as it provides working Swift code that maps directly to our macOS implementations.
 
-**WebSocket Implementation**: Our macOS WebSocket implementation (`BufferWebSocketClient`, `WebSocketProtocol`, etc.) is an EXACT copy of the iOS VibeTunnel implementation. We match it precisely, including:
-- Using both query parameter AND Authorization header for authentication (iOS does both)
-- WebSocket abstraction layer with protocols and factory pattern
-- Ping-based connection verification
-- Binary buffer decoding logic
-Always refer to the iOS implementation as the source of truth and match it exactly.
+**File-Based Architecture**: VibeTunnelTalk uses asciinema files for terminal data:
+- Asciinema files provide 100% complete terminal output
+- No data loss from 50ms debouncing that would occur with WebSocket updates
+- Simpler implementation without binary protocol decoding
+- More reliable than network-based streaming
+- No WebSocket connections needed at all
 
 The app communicates with VibeTunnel sessions using two mechanisms:
 
@@ -121,13 +112,12 @@ The app communicates with VibeTunnel sessions using two mechanisms:
   - HEARTBEAT (0x04): Keep-alive ping/pong
   - ERROR (0x05): Error messages
 
-#### 2. WebSocket Stream (Terminal State)
-- Endpoint: `ws://localhost:4020/buffers`
-- Protocol: WebSocket with binary frame streaming
-- Authentication: JWT token in query parameter and Authorization header
-- Subscription: JSON messages to subscribe/unsubscribe from sessions
-- Response: Real-time binary buffer updates with cell-level detail
-- Format: Binary protocol with magic bytes (0xBF for frames, 0x5654 for buffers)
+#### 2. Asciinema Files (Terminal State)
+- Location: `~/.vibetunnel/control/{sessionId}/stdout`
+- Format: Asciinema v2 (JSONL - JSON Lines)
+- Content: Complete terminal output without debouncing
+- Updates: File monitoring detects new content in real-time
+- Reliability: 100% data capture from local filesystem
 
 ### Key Dependencies
 
@@ -148,7 +138,7 @@ A comprehensive implementation guide is available in `docs/VibeTunnelTalk_Implem
 ## Key Implementation Notes
 
 1. **Entitlements**: The app requires specific sandbox permissions for:
-   - Network client access (OpenAI API and VibeTunnel buffer API)
+   - Network client access (OpenAI API)
    - Audio input (microphone)
    - File access to `~/.vibetunnel/` directory
 
@@ -156,11 +146,11 @@ A comprehensive implementation guide is available in `docs/VibeTunnelTalk_Implem
 
 3. **Audio Format**: OpenAI Realtime API expects 24kHz PCM16 mono audio
 
-4. **Real-time Updates**: The app uses WebSocket for real-time terminal buffer updates with intelligent accumulation
+4. **Real-time Updates**: The app uses file monitoring for real-time terminal updates with intelligent accumulation
 
-5. **No ANSI Parsing**: VibeTunnel handles all terminal emulation and ANSI escape sequence parsing server-side
+5. **No WebSocket Buffers**: Terminal data comes from asciinema files, not WebSocket streaming
 
-6. **Error Handling**: Implement reconnection logic for IPC socket and WebSocket connections (automatic exponential backoff included)
+6. **Error Handling**: IPC socket reconnection with automatic retry
 
 7. **Audio Playback Management**: The system uses a drop-and-replace strategy for audio responses:
    - Prevents audio overlap by playing only one response at a time

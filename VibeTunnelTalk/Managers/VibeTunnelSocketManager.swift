@@ -13,8 +13,6 @@ class VibeTunnelSocketManager: ObservableObject {
     var receiveBuffer = Data()
     let queue = DispatchQueue(label: "vibetunnel.socket", qos: .userInitiated)
 
-    // Session lifecycle client for monitoring session events
-    private var sessionLifecycleClient: SessionLifecycleClient?
 
     // Smart terminal processor for intelligent data filtering
     private var terminalProcessor: SmartTerminalProcessor?
@@ -169,36 +167,7 @@ class VibeTunnelSocketManager: ObservableObject {
     private func startSessionMonitoring(sessionId: String) {
         logger.debug("Starting session monitoring for session: \(sessionId)")
 
-        // Use shared session lifecycle client for monitoring
-        sessionLifecycleClient = SessionLifecycleClient.shared
-        logger.verbose("Using shared SessionLifecycleClient instance")
-
-        // Configure lifecycle client with auth service if available
-        if let authService = authService {
-            logger.verbose("Configuring lifecycle client with auth service")
-            sessionLifecycleClient?.setAuthenticationService(authService)
-        } else {
-            logger.warning("No auth service available for lifecycle client")
-        }
-
-        // Set up lifecycle event handler
-        sessionLifecycleClient?.setLifecycleHandler { [weak self] event in
-            switch event {
-            case .connected(let sid):
-                self?.logger.debug("Session connected: \(sid)")
-            case .disconnected(let sid):
-                self?.logger.debug("Session disconnected: \(sid)")
-                if sid == sessionId {
-                    self?.disconnect()
-                }
-            case .error(let message):
-                self?.logger.warning("Session error: \(message)")
-            }
-        }
-
-        // Start lifecycle monitoring connection
-        sessionLifecycleClient?.connect()
-        logger.debug("Session lifecycle monitoring initiated")
+        // No WebSocket lifecycle monitoring needed - we use asciinema files
 
         // Start file-based terminal processing
         Task {
@@ -217,10 +186,6 @@ class VibeTunnelSocketManager: ObservableObject {
     private func stopSessionMonitoring() {
         logger.debug("Stopping session monitoring")
 
-        // Clear lifecycle handler
-        sessionLifecycleClient?.setLifecycleHandler { _ in }
-        sessionLifecycleClient = nil
-
         // Stop the smart processor if it's running
         Task {
             if let terminalProcessor = terminalProcessor {
@@ -231,5 +196,6 @@ class VibeTunnelSocketManager: ObservableObject {
 
         logger.info("Session monitoring stopped")
     }
+
 }
 
