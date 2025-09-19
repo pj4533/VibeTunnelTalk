@@ -22,7 +22,7 @@ class KeychainHelper {
         guard let data = cleanedKey.data(using: .utf8) else { return false }
 
         // Delete any existing item
-        deleteAPIKey()
+        _ = deleteAPIKey()
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
