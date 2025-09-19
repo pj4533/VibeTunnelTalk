@@ -229,10 +229,7 @@ extension OpenAIRealtimeManager {
         let timestamp = formatter.string(from: Date())
         logger.info("[OPENAI @ \(timestamp)] 🎯 Session created successfully")
 
-        // Send initial greeting after session is ready
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.sendTerminalContext("VibeTunnelTalk connected to Claude Code session. Ready to narrate terminal activity.")
-        }
+        // Don't send any initial greeting - let OpenAI handle it based on the first terminal output
     }
 
     private func handleSessionUpdated(_ json: [String: Any]) {

@@ -159,9 +159,10 @@ class SmartTerminalProcessor: ObservableObject {
 
     /// Format terminal content for OpenAI
     private func formatForOpenAI(_ content: String) -> String {
-        // Add context about what this is
+        // Simply pass through the terminal content with minimal formatting
+        // Let OpenAI's prompt handle all the parsing and context awareness
         return """
-        [Terminal Output Update]
+        [Terminal Output]
         \(content)
         """
     }
