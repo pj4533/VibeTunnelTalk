@@ -93,26 +93,12 @@ extension OpenAIRealtimeManager {
 
         sendEvent(event)
 
-        // Request both text and audio response with narration
+        // Request both text and audio response
+        // Note: Instructions are now centralized in session configuration via NarrationPromptManager
         let responseEvent: [String: Any] = [
             "type": "response.create",
             "response": [
-                "modalities": ["text", "audio"],
-                "instructions": """
-                    ALWAYS use "we". NEVER say "Claude", "the system", "the terminal", etc.
-
-                    CRITICAL: Check if this is INTERIM activity or FINAL results:
-
-                    INTERIM (action in progress):
-                    - Maximum 3-5 words
-                    - State ONLY the action
-                    - Examples: "Reading files", "Running tests", "Checking code"
-
-                    FINAL (completed with results):
-                    - Provide detailed summary
-                    - Describe errors, results, answers
-                    - State what was found/happened
-                    """
+                "modalities": ["text", "audio"]
             ]
         ]
         logger.info("[OPENAI @ \(timestamp)] 🎤 Requesting narration response")
