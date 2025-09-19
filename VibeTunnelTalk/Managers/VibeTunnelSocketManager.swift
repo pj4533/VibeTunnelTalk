@@ -115,6 +115,13 @@ class VibeTunnelSocketManager: ObservableObject {
             return
         }
 
+        // DEBUG: Log as error to make it stand out
+        logger.error("🚨🚨🚨 SENDING INPUT TO TERMINAL: \(text.debugDescription)")
+        logger.error("🚨 Stack trace for debugging:")
+        Thread.callStackSymbols.prefix(10).forEach { symbol in
+            logger.error("🚨   \(symbol)")
+        }
+
         let message = IPCMessage.createStdinData(text)
 
         connection?.send(content: message.data, completion: .contentProcessed { [weak self] error in
@@ -131,6 +138,8 @@ class VibeTunnelSocketManager: ObservableObject {
             return
         }
 
+        // DEBUG: Log refresh attempts as errors
+        logger.error("🚨🚨🚨 REFRESH TERMINAL CALLED - THIS WILL SEND CTRL+L")
         logger.info("[VIBETUNNEL-REFRESH] 🔄 Requesting terminal refresh")
 
         // Send a harmless control sequence that should trigger output
@@ -150,6 +159,9 @@ class VibeTunnelSocketManager: ObservableObject {
             logger.warning("[VIBETUNNEL-SOCKET] ⚠️ Cannot resize - not connected")
             return
         }
+
+        // DEBUG: Log resize as error to track it
+        logger.error("🚨🚨🚨 SENDING RESIZE: \(cols)x\(rows)")
 
         let message = IPCMessage.createResize(cols: cols, rows: rows)
 

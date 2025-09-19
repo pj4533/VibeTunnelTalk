@@ -161,7 +161,9 @@ struct ContentView: View {
         // Connect OpenAI function calls to command processor
         openAIManager.functionCallRequested
             .sink { functionCall in
+                self.logger.error("🚨🚨🚨 CONTENTVIEW: OpenAI requested function call")
                 commandProcessor.processFunctionCall(functionCall) { command in
+                    self.logger.error("🚨🚨🚨 CONTENTVIEW: About to send command: \(command)")
                     socketManager.sendInput(command)
                 }
             }

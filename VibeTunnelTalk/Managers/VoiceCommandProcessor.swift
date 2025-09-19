@@ -10,14 +10,18 @@ class VoiceCommandProcessor: ObservableObject {
     
     /// Process a function call from OpenAI
     func processFunctionCall(_ functionCall: FunctionCall, completion: @escaping (String) -> Void) {
+        // DEBUG: Log as error to make it stand out
+        logger.error("🚨🚨🚨 OPENAI FUNCTION CALL: \(functionCall.name)")
+        logger.error("🚨 Parameters: \(functionCall.parameters)")
         logger.info("Processing function call: \(functionCall.name)")
-        
+
         switch functionCall.name {
         case "execute_terminal_command":
             if let command = functionCall.parameters["command"] as? String {
+                logger.error("🚨🚨🚨 OPENAI WANTS TO EXECUTE: \(command)")
                 logger.info("Executing terminal command: \(command)")
                 lastCommand = command
-                
+
                 // Add newline if not present
                 let finalCommand = command.hasSuffix("\n") ? command : "\(command)\n"
                 completion(finalCommand)
@@ -25,6 +29,7 @@ class VoiceCommandProcessor: ObservableObject {
             
         case "control_session":
             if let action = functionCall.parameters["action"] as? String {
+                logger.error("🚨🚨🚨 OPENAI SESSION CONTROL: \(action)")
                 handleSessionControl(action: action, completion: completion)
             }
             
