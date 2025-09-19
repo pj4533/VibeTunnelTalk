@@ -7,7 +7,6 @@ struct ConnectedView: View {
     @ObservedObject var openAIManager: OpenAIRealtimeManager
     
     @State private var isExpanded = true
-    @State private var showTerminal = false
     
     private let logger = AppLogger.ui
     
@@ -42,36 +41,15 @@ struct ConnectedView: View {
                         TranscriptionCard(text: openAIManager.transcription)
                     }
                     
-                    // Terminal Buffer Display
-                    if showTerminal {
-                        if let sessionId = socketManager.currentSessionId {
-                            TerminalBufferCard(sessionId: sessionId, socketManager: socketManager)
-                        } else {
-                            Text("Terminal buffer not available")
-                                .foregroundColor(.secondary)
-                                .padding()
-                        }
-                    }
+                    // Terminal display removed - using file-based streaming now
                 }
                 .padding()
             }
             
             // Controls
             HStack {
-                Button(action: { showTerminal.toggle() }) {
-                    Label(
-                        showTerminal ? "Hide Terminal Buffer" : "Show Terminal Buffer",
-                        systemImage: "terminal"
-                    )
-                }
-                
-                Button(action: { socketManager.refreshTerminal() }) {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .help("Request terminal to resend current buffer")
-                
                 Spacer()
-                
+
                 Button("Disconnect") {
                     disconnect()
                 }
@@ -141,21 +119,3 @@ struct TranscriptionCard: View {
     }
 }
 
-struct TerminalBufferCard: View {
-    let sessionId: String
-    @ObservedObject var socketManager: VibeTunnelSocketManager
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Terminal Buffer", systemImage: "terminal")
-                .font(.headline)
-
-            TerminalBufferView(sessionId: sessionId, fontSize: 11)
-                .frame(height: 300)
-                .cornerRadius(8)
-        }
-        .padding()
-        .background(Color.gray.opacity(0.1))
-        .cornerRadius(10)
-    }
-}

@@ -75,11 +75,6 @@ class SmartTerminalProcessor: ObservableObject {
         logger.info("✅ Processing started with complete terminal stream")
     }
 
-    /// Start processing buffer snapshots from WebSocket client (deprecated - kept for backwards compatibility)
-    func startProcessingWithBufferClient(bufferClient: BufferWebSocketClient?, sessionId: String) async {
-        // Redirect to file reader implementation
-        await startProcessingWithFileReader(sessionId: sessionId)
-    }
 
     /// Process new terminal output from asciinema stream
     private func processStreamingOutput(_ newContent: String) {
